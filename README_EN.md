@@ -43,6 +43,12 @@ The core video processing features are still under development, but the user sys
 - Light and dark themes — easy on the eyes at night
 - Responsive layout — works on mobile too
 
+### ⚙️ Task Queue
+- **State Machine**: queued → processing → completed/failed, full lifecycle management
+- **Auto Processing**: Server automatically polls the queue and processes pending tasks
+- **Progress Tracking**: Real-time 0-100% progress display
+- **Extensible**: Register custom handlers for different task types (analysis/editing/subtitles)
+
 ### 📤 Video Upload
 - **Drag & Drop**: Drag files onto the page or click to select, up to 10 files at a time
 - **Format Validation**: Supports MP4, MKV, MOV, AVI, WebM, FLV and other popular formats
@@ -60,7 +66,7 @@ To be honest, everything below **still needs to be done**. I keep a detailed dev
 
 | Feature | Current State | What Needs to Be Done |
 |---|---|---|
-| **Async Task Queue** | DB tables exist, no code | Integrate Bull or RabbitMQ for task queuing, state machine, progress push |
+| **Async Task Queue** | ✅ Done | In-memory queue + pluggable handlers, upgradeable to Bull/RabbitMQ later |
 | **AI Video Analysis** | Schema exists, logic is empty | Frame extraction → multimodal model analysis → scene descriptions + keywords + highlight detection |
 | **FFmpeg Editing** | Not started at all | Slicing, merging, resizing, watermarking, trimming intros/outros |
 
@@ -388,7 +394,7 @@ I don't want to give you the impression this project is perfect. Here's what I a
 
 1. **Email is fake**: `server/services/emailService.ts` only does `console.log` — you'll need to wire up SendGrid or Mailgun for real use
 2. **Video processing is entirely unimplemented**: There's zero code for FFmpeg, AI analysis, or subtitles. The database tables exist as forward-looking placeholders
-3. **No task queue**: No Bull, RabbitMQ, or any other async queue integration. Task management code is empty shells
+3. **Task queue is in-memory**: The queue runs inside the server process and is lost on restart. Upgradeable to Bull/RabbitMQ for persistence and distributed processing
 4. **Cloud storage depends on Forge**: `storage.ts` S3 upload logic relies on Forge proxy. Video uploads use local storage — if you want cloud storage (AWS S3, Cloudflare R2, etc.), you'll need to adapt it
 5. **Almost no tests**: The entire project has exactly 1 test file that tests the logout function. A proper project would have dozens or hundreds
 6. **Admin panel is empty**: The admin buttons in the Dashboard don't do anything yet — the corresponding pages and APIs haven't been built
