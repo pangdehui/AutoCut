@@ -8,4 +8,7 @@ export const ENV = {
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+  openaiBaseUrl: process.env.OPENAI_BASE_URL ?? "",
+  openaiChatModel: process.env.OPENAI_CHAT_MODEL ?? "gpt-4o",
+  openaiWhisperModel: process.env.OPENAI_WHISPER_MODEL ?? "whisper-1",
 };

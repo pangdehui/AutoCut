@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import type { ProcessingTask } from "../../drizzle/schema";
 import { registerTaskHandler } from "./taskService";
 import { openai } from "../_core/openai";
+import { ENV } from "../_core/env";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
@@ -111,7 +112,7 @@ async function analyzeWithAI(
     await updateProgress(30);
 
     const result = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: ENV.openaiChatModel,
       messages: [
         {
           role: "user",

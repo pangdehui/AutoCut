@@ -90,9 +90,14 @@ export async function getUserByOpenId(openId: string) {
     return undefined;
   }
 
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
-  return result.length > 0 ? result[0] : undefined;
+  try {
+    const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
+    console.log("[Database] getUserByOpenId:", openId, "found:", result.length > 0);
+    return result.length > 0 ? result[0] : undefined;
+  } catch (error) {
+    console.error("[Database] getUserByOpenId query failed:", error);
+    return undefined;
+  }
 }
 
 // TODO: add feature queries here as your schema grows.

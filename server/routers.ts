@@ -1,5 +1,6 @@
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
@@ -43,8 +44,19 @@ export const appRouter = router({
           name: z.string().optional(),
         })
       )
-      .mutation(async ({ input }) => {
-        return await registerWithEmail(input.email, input.code, input.password, input.name);
+      .mutation(async ({ input, ctx }) => {
+        const result = await registerWithEmail(input.email, input.code, input.password, input.name);
+        if (result.success && result.userId) {
+          const openId = `email_${input.email}`;
+          const token = await sdk.signSession({
+            openId,
+            appId: "local",
+            name: input.name || input.email.split("@")[0],
+          });
+          const cookieOptions = getSessionCookieOptions(ctx.req);
+          ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: 365 * 24 * 60 * 60 * 1000 });
+        }
+        return result;
       }),
 
     sendLoginCode: publicProcedure
@@ -60,8 +72,19 @@ export const appRouter = router({
           code: z.string(),
         })
       )
-      .mutation(async ({ input }) => {
-        return await loginWithCode(input.email, input.code);
+      .mutation(async ({ input, ctx }) => {
+        const result = await loginWithCode(input.email, input.code);
+        if (result.success && result.userId) {
+          const openId = `email_${input.email}`;
+          const token = await sdk.signSession({
+            openId,
+            appId: "local",
+            name: input.email.split("@")[0],
+          });
+          const cookieOptions = getSessionCookieOptions(ctx.req);
+          ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: 365 * 24 * 60 * 60 * 1000 });
+        }
+        return result;
       }),
   }),
 

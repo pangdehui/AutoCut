@@ -13,6 +13,7 @@ export default function Login() {
   const [code, setCode] = useState("");
   const [step, setStep] = useState<"email" | "verify">("email");
   const [isLoading, setIsLoading] = useState(false);
+  const [devCode, setDevCode] = useState<string | undefined>();
 
   const sendCodeMutation = trpc.auth.sendLoginCode.useMutation();
   const loginMutation = trpc.auth.loginWithCode.useMutation();
@@ -28,6 +29,7 @@ export default function Login() {
       const result = await sendCodeMutation.mutateAsync({ email });
       if (result.success) {
         toast.success(result.message);
+        setDevCode(result.devCode);
         setStep("verify");
       } else {
         toast.error(result.message);
@@ -115,6 +117,11 @@ export default function Login() {
                 <div className="bg-accent/5 border border-accent/20 rounded-lg p-3 text-sm text-center text-foreground/80">
                   验证码已发送到 <span className="font-medium">{email}</span>
                 </div>
+                {devCode && (
+                  <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3 text-sm text-center text-yellow-800 font-mono">
+                    [开发模式] 验证码：<span className="font-bold text-lg tracking-widest">{devCode}</span>
+                  </div>
+                )}
                 <div className="space-y-2">
                   <label className="text-sm font-medium">验证码</label>
                   <Input

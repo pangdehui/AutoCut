@@ -260,6 +260,7 @@ class SDKServer {
     // Regular authentication flow
     const cookies = this.parseCookies(req.headers.cookie);
     const sessionCookie = cookies.get(COOKIE_NAME);
+    console.log("[Auth] Cookie header present:", !!req.headers.cookie, "Session cookie present:", !!sessionCookie);
     const session = await this.verifySession(sessionCookie);
 
     if (!session) {
@@ -269,9 +270,13 @@ class SDKServer {
     const sessionUserId = session.openId;
     const signedInAt = new Date();
     let user = await db.getUserByOpenId(sessionUserId);
+    console.log("[Auth] Session openId:", sessionUserId, "User found:", !!user);
 
-    // If user not in DB, sync from OAuth server automatically
+    // If user not in DB, sync from OAuth server automatically (skip for local email users)
     if (!user) {
+      if (sessionUserId.startsWith("email_")) {
+        throw ForbiddenError("User not found");
+      }
       try {
         const userInfo = await this.getUserInfoWithJwt(sessionCookie ?? "");
         await db.upsertUser({
@@ -297,6 +302,7 @@ class SDKServer {
       email: user.email || "",
       lastSignedIn: signedInAt,
     });
+    console.log("[Auth] upsertUser succeeded, returning user:", user.id);
 
     return user;
   }

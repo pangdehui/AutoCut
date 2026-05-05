@@ -11,7 +11,7 @@ import { Loader2, Upload, Zap, Settings, Scissors, Subtitles } from "lucide-reac
 
 export default function Dashboard() {
   const { user, loading } = useAuth();
-  const creditsQuery = trpc.credits.getBalance.useQuery();
+  const creditsQuery = trpc.credits.getBalance.useQuery(undefined, { enabled: !!user });
 
   if (loading) {
     return (

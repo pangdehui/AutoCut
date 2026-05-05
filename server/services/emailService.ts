@@ -1,6 +1,6 @@
 import { getDb } from "../db";
 import { emailVerificationCodes } from "../../drizzle/schema";
-import { eq, and, lt } from "drizzle-orm";
+import { eq, and, lt, isNull } from "drizzle-orm";
 
 /**
  * 生成随机验证码
@@ -85,7 +85,7 @@ export async function verifyEmailCode(
           eq(emailVerificationCodes.email, email),
           eq(emailVerificationCodes.code, code),
           eq(emailVerificationCodes.type, type),
-          eq(emailVerificationCodes.usedAt, null as any)
+          isNull(emailVerificationCodes.usedAt)
         )
       )
       .limit(1);

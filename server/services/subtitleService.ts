@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import type { ProcessingTask } from "../../drizzle/schema";
 import { registerTaskHandler } from "./taskService";
 import { openai } from "../_core/openai";
+import { ENV } from "../_core/env";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
@@ -79,7 +80,7 @@ async function runASR(audioPath: string, taskId: number): Promise<SubEntry[]> {
     const audioStream = fs.createReadStream(audioPath);
     const response = await openai.audio.transcriptions.create({
       file: audioStream,
-      model: "whisper-1",
+      model: ENV.openaiWhisperModel,
       response_format: "verbose_json",
     });
 
@@ -153,7 +154,7 @@ async function translateSubtitles(
 
   try {
     const result = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: ENV.openaiChatModel,
       messages: [
         {
           role: "user",

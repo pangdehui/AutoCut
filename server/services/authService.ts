@@ -21,7 +21,7 @@ function verifyPassword(password: string, hash: string): boolean {
 /**
  * 邮箱注册 - 第一步：发送验证码
  */
-export async function sendRegisterCode(email: string): Promise<{ success: boolean; message: string }> {
+export async function sendRegisterCode(email: string): Promise<{ success: boolean; message: string; devCode?: string }> {
   const db = await getDb();
   if (!db) {
     return { success: false, message: "数据库连接失败" };
@@ -51,7 +51,8 @@ export async function sendRegisterCode(email: string): Promise<{ success: boolea
       return { success: false, message: "验证码发送失败" };
     }
 
-    return { success: true, message: "验证码已发送到您的邮箱" };
+    const devCode = process.env.NODE_ENV !== "production" ? code : undefined;
+    return { success: true, message: "验证码已发送到您的邮箱", devCode };
   } catch (error) {
     console.error("[AuthService] Register code send failed:", error);
     return { success: false, message: "发送失败，请稍后重试" };
@@ -92,8 +93,8 @@ export async function registerWithEmail(
 
     // 创建用户
     const passwordHash = hashPassword(password);
-    const result = await db.insert(users).values({
-      openId: `email_${email}_${Date.now()}`,
+    await db.insert(users).values({
+      openId: `email_${email}`,
       email,
       name: name || email.split("@")[0],
       passwordHash,
@@ -103,7 +104,14 @@ export async function registerWithEmail(
       isActive: true,
     });
 
-    const userId = (result as any).insertId;
+    // 查询刚插入的用户以获取 id
+    const newUser = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+
+    const userId = newUser[0].id;
 
     // 创建积分账户（初始赠送 1000 积分）
     await db.insert(userCredits).values({
@@ -127,7 +135,7 @@ export async function registerWithEmail(
 /**
  * 邮箱登录 - 第一步：发送验证码
  */
-export async function sendLoginCode(email: string): Promise<{ success: boolean; message: string }> {
+export async function sendLoginCode(email: string): Promise<{ success: boolean; message: string; devCode?: string }> {
   const db = await getDb();
   if (!db) {
     return { success: false, message: "数据库连接失败" };
@@ -157,7 +165,8 @@ export async function sendLoginCode(email: string): Promise<{ success: boolean; 
       return { success: false, message: "验证码发送失败" };
     }
 
-    return { success: true, message: "验证码已发送到您的邮箱" };
+    const devCode = process.env.NODE_ENV !== "production" ? code : undefined;
+    return { success: true, message: "验证码已发送到您的邮箱", devCode };
   } catch (error) {
     console.error("[AuthService] Login code send failed:", error);
     return { success: false, message: "发送失败，请稍后重试" };
