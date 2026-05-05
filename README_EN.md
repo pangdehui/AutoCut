@@ -43,6 +43,13 @@ The core video processing features are still under development, but the user sys
 - Light and dark themes — easy on the eyes at night
 - Responsive layout — works on mobile too
 
+### 📝 Multi-language Subtitles
+- **Speech Recognition**: Whisper API converts video speech to text with precise timestamps
+- **Multi-language Translation**: AI translation for 8 languages (en/ja/ko/fr/de/es/pt/ru)
+- **SRT Generation**: Standard SRT subtitle files ready for any media player
+- **Burn-in Option**: Optionally burn subtitles directly into the video
+- **Graceful Degradation**: Falls back to mock subtitles when ASR is unavailable
+
 ### ✂️ FFmpeg Video Editing
 - **Trim**: Remove intros/outros with second-level precision
 - **Slice & Merge**: Cut multiple segments and concatenate them
@@ -73,31 +80,30 @@ The core video processing features are still under development, but the user sys
 
 ## Roadmap: What's Next? 🗺️
 
-To be honest, everything below **still needs to be done**. I keep a detailed development plan in `todo.md` — here's a quick overview by priority:
+The core video processing pipeline is fully implemented. Here's what's next:
 
-### 🔴 High Priority (Core Features, Most Urgent)
-
-| Feature | Current State | What Needs to Be Done |
-|---|---|---|
-| **Async Task Queue** | ✅ Done | In-memory queue + pluggable handlers, upgradeable to Bull/RabbitMQ later |
-| **AI Video Analysis** | ✅ Done | FFmpeg frame extraction + multimodal AI analysis + mock fallback, extensible for better models |
-| **FFmpeg Editing** | ✅ Done | Trim, slice & merge, resize, watermark, speed — five operations |
-
-### 🟡 Medium Priority (Important but Can Wait)
+### 🔴 High Priority
 
 | Feature | Current State | What Needs to Be Done |
 |---|---|---|
-| **Subtitle Generation** | Only an empty `subtitles` table | ASR speech recognition → translation → SRT file generation → burn-in |
 | **Admin Dashboard** | A few placeholder buttons | User management pages, credit management panel, task monitoring dashboard |
-| **Task Center** | An empty tab in Dashboard | Show queued/processing/completed/failed tasks with detail view and result downloads |
+| **Task Queue Upgrade** | In-memory queue | Upgrade to Bull/RabbitMQ for persistence, distribution, and resume capability |
 
-### 🟢 Low Priority (Nice to Have)
+### 🟡 Medium Priority
 
 | Feature | Description |
 |---|---|
 | **Analytics** | Usage stats, processing time, credit consumption trends |
 | **Performance Optimization** | Large file handling, DB query optimization, caching |
+| **Cloud Storage** | Support AWS S3 / Alibaba OSS / Cloudflare R2 |
+
+### 🟢 Low Priority
+
+| Feature | Description |
+|---|---|
 | **Security Hardening** | Rate limiting, audit logging for sensitive actions, dependency scanning |
+| **Test Coverage** | Add unit tests, integration tests, E2E tests |
+| **Internationalization** | Frontend i18n support |
 
 ---
 
@@ -406,7 +412,7 @@ A: That's because of shadcn/ui. It's not a typical npm package — instead, it c
 I don't want to give you the impression this project is perfect. Here's what I already know needs work:
 
 1. **Email is fake**: `server/services/emailService.ts` only does `console.log` — you'll need to wire up SendGrid or Mailgun for real use
-2. **Subtitles not yet built**: Subtitle generation is unimplemented. AI analysis and video editing are now functional
+2. **AI analysis & ASR depend on external APIs**: AI analysis and subtitle recognition rely on Forge API, falling back to mock data when unconfigured
 3. **Task queue is in-memory**: The queue runs inside the server process and is lost on restart. Upgradeable to Bull/RabbitMQ for persistence and distributed processing
 4. **Cloud storage depends on Forge**: `storage.ts` S3 upload logic relies on Forge proxy. Video uploads use local storage — if you want cloud storage (AWS S3, Cloudflare R2, etc.), you'll need to adapt it
 5. **Almost no tests**: The entire project has exactly 1 test file that tests the logout function. A proper project would have dozens or hundreds
