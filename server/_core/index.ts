@@ -13,6 +13,7 @@ import { sdk } from "./sdk";
 import { validateVideoFile, saveVideo } from "../services/videoService";
 import "../services/analysisService";
 import "../services/editingService";
+import "../services/subtitleService";
 import path from "node:path";
 import fs from "node:fs";
 

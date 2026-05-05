@@ -2,8 +2,9 @@ import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
-import { Loader2, Clock, CheckCircle2, AlertCircle, Trash2, RotateCcw, BarChart3 } from "lucide-react";
+import { Loader2, Clock, CheckCircle2, AlertCircle, Trash2, RotateCcw, BarChart3, FileText } from "lucide-react";
 import AnalysisViewer from "./AnalysisViewer";
+import SubtitleViewer from "./SubtitleViewer";
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   analysis: "AI 分析",
@@ -85,6 +86,7 @@ export default function TaskList() {
   );
 
   const [expandedAnalysis, setExpandedAnalysis] = useState<number | null>(null);
+  const [expandedSubtitle, setExpandedSubtitle] = useState<number | null>(null);
 
   const deleteMutation = trpc.tasks.remove.useMutation({
     onSuccess: () => {
@@ -185,6 +187,22 @@ export default function TaskList() {
                             {expandedAnalysis === task.id ? "收起分析" : "查看分析"}
                           </Button>
                         )}
+                      {task.taskType === "subtitle" &&
+                        task.status === "completed" && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() =>
+                              setExpandedSubtitle(
+                                expandedSubtitle === task.id ? null : task.id
+                              )
+                            }
+                          >
+                            <FileText className="h-3 w-3 mr-1" />
+                            {expandedSubtitle === task.id ? "收起字幕" : "查看字幕"}
+                          </Button>
+                        )}
                       {(task.status === "completed" || task.status === "failed") && (
                         <Button
                           variant="ghost"
@@ -238,6 +256,12 @@ export default function TaskList() {
                   {expandedAnalysis === task.id && (
                     <div className="mt-4 pt-4 border-t">
                       <AnalysisViewer taskId={task.id} />
+                    </div>
+                  )}
+
+                  {expandedSubtitle === task.id && (
+                    <div className="mt-4 pt-4 border-t">
+                      <SubtitleViewer taskId={task.id} />
                     </div>
                   )}
                 </div>

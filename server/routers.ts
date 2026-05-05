@@ -8,6 +8,7 @@ import { getUserCredits, initializeCreditRates, rechargeCredits, deductCreditsAd
 import { getUserVideos, getVideoById } from "./services/videoService";
 import { createTask, getUserTasks, getTaskById, deleteTask } from "./services/taskService";
 import { getAnalysisByTaskId } from "./services/analysisService";
+import { getSubtitlesByTaskId } from "./services/subtitleService";
 
 // 初始化积分费率
 initializeCreditRates().catch(console.error);
@@ -100,6 +101,15 @@ export const appRouter = router({
           return { success: false, message: "权限不足" };
         }
         return await deductCreditsAdmin(input.userId, input.amount, input.description);
+      }),
+  }),
+
+  subtitles: router({
+    byTaskId: protectedProcedure
+      .input(z.object({ taskId: z.number() }))
+      .query(async ({ input }) => {
+        const result = await getSubtitlesByTaskId(input.taskId);
+        return { success: true, data: result };
       }),
   }),
 

@@ -6,7 +6,8 @@ import { trpc } from "@/lib/trpc";
 import VideoUpload from "./VideoUpload";
 import TaskList from "./TaskList";
 import EditingPanel from "./EditingPanel";
-import { Loader2, Upload, Zap, Settings, Scissors } from "lucide-react";
+import SubtitlePanel from "./SubtitlePanel";
+import { Loader2, Upload, Zap, Settings, Scissors, Subtitles } from "lucide-react";
 
 export default function Dashboard() {
   const { user, loading } = useAuth();
@@ -107,6 +108,10 @@ export default function Dashboard() {
               <Scissors className="h-4 w-4" />
               视频剪辑
             </TabsTrigger>
+            <TabsTrigger value="subtitle" className="flex items-center gap-2">
+              <Subtitles className="h-4 w-4" />
+              字幕生成
+            </TabsTrigger>
             <TabsTrigger value="tasks" className="flex items-center gap-2">
               任务列表
             </TabsTrigger>
@@ -126,6 +131,11 @@ export default function Dashboard() {
           {/* 视频剪辑标签页 */}
           <TabsContent value="edit">
             <EditingPanel />
+          </TabsContent>
+
+          {/* 字幕生成标签页 */}
+          <TabsContent value="subtitle">
+            <SubtitlePanel />
           </TabsContent>
 
           {/* 任务列表标签页 */}
