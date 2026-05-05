@@ -9,6 +9,7 @@ import Register from "./pages/Auth/Register";
 import Login from "./pages/Auth/Login";
 import Profile from "./pages/Dashboard/Profile";
 import Dashboard from "./pages/Dashboard/Index";
+import AdminPage from "./pages/Admin/Index";
 
 function Router() {
   return (
@@ -18,6 +19,7 @@ function Router() {
       <Route path={"/login"} component={Login} />
       <Route path={"/profile"} component={Profile} />
       <Route path={"/dashboard"} component={Dashboard} />
+      <Route path={"/admin"} component={AdminPage} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

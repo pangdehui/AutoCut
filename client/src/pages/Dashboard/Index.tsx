@@ -50,9 +50,11 @@ export default function Dashboard() {
               <a href="/tasks" className="text-sm text-muted-foreground hover:text-foreground">
                 任务列表
               </a>
-              <a href="/admin" className="text-sm text-muted-foreground hover:text-foreground">
-                {user.role === "admin" ? "管理后台" : ""}
-              </a>
+              {user.role === "admin" && (
+                <a href="/admin" className="text-sm text-muted-foreground hover:text-foreground">
+                  管理后台
+                </a>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-4">

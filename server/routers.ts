@@ -9,6 +9,7 @@ import { getUserVideos, getVideoById } from "./services/videoService";
 import { createTask, getUserTasks, getTaskById, deleteTask } from "./services/taskService";
 import { getAnalysisByTaskId } from "./services/analysisService";
 import { getSubtitlesByTaskId } from "./services/subtitleService";
+import { listUsers, setUserActive, setUserRole, getCreditTransactions, getTaskStats, listAllTasks } from "./services/adminService";
 
 // 初始化积分费率
 initializeCreditRates().catch(console.error);
@@ -185,6 +186,48 @@ export const appRouter = router({
         }
         return { success: true, data: video };
       }),
+  }),
+
+  admin: router({
+    listUsers: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "admin") return { success: false, message: "权限不足" };
+      const data = await listUsers();
+      return { success: true, data };
+    }),
+
+    setUserActive: protectedProcedure
+      .input(z.object({ userId: z.number(), isActive: z.boolean() }))
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user.role !== "admin") return { success: false, message: "权限不足" };
+        return await setUserActive(input.userId, input.isActive);
+      }),
+
+    setUserRole: protectedProcedure
+      .input(z.object({ userId: z.number(), role: z.enum(["user", "admin"]) }))
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user.role !== "admin") return { success: false, message: "权限不足" };
+        return await setUserRole(input.userId, input.role);
+      }),
+
+    creditTransactions: protectedProcedure
+      .input(z.object({ userId: z.number().optional() }))
+      .query(async ({ input, ctx }) => {
+        if (ctx.user.role !== "admin") return { success: false, data: [] };
+        const data = await getCreditTransactions(input.userId);
+        return { success: true, data };
+      }),
+
+    taskStats: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "admin") return { success: false, data: null };
+      const data = await getTaskStats();
+      return { success: true, data };
+    }),
+
+    listAllTasks: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "admin") return { success: false, data: [] };
+      const data = await listAllTasks();
+      return { success: true, data };
+    }),
   }),
 });
 
