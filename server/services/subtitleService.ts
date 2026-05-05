@@ -3,8 +3,7 @@ import { subtitles, videos } from "../../drizzle/schema";
 import { eq } from "drizzle-orm";
 import type { ProcessingTask } from "../../drizzle/schema";
 import { registerTaskHandler } from "./taskService";
-import { transcribeAudio } from "../_core/voiceTranscription";
-import { invokeLLM } from "../_core/llm";
+import { openai } from "../_core/openai";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
@@ -77,52 +76,33 @@ async function runASR(audioPath: string, taskId: number): Promise<SubEntry[]> {
   ensureDirs();
 
   try {
-    const audioBuffer = fs.readFileSync(audioPath);
-    const blob = new Blob([audioBuffer], { type: "audio/mp3" });
+    const audioStream = fs.createReadStream(audioPath);
+    const response = await openai.audio.transcriptions.create({
+      file: audioStream,
+      model: "whisper-1",
+      response_format: "verbose_json",
+    });
 
-    // 尝试使用 Forge Whisper API
-    const forgeUrl = process.env.BUILT_IN_FORGE_API_URL;
-    const forgeKey = process.env.BUILT_IN_FORGE_API_KEY;
+    const segments = (response as any).segments as
+      | { start: number; end: number; text: string }[]
+      | undefined;
 
-    if (forgeUrl && forgeKey) {
-      const formData = new FormData();
-      formData.append("file", blob, "audio.mp3");
-      formData.append("model", "whisper-1");
-      formData.append("response_format", "verbose_json");
-      formData.append("language", "zh");
+    if (segments && segments.length > 0) {
+      return segments.map((seg, i) => ({
+        index: i + 1,
+        start: seg.start,
+        end: seg.end,
+        text: seg.text.trim(),
+      }));
+    }
 
-      const baseUrl = forgeUrl.endsWith("/") ? forgeUrl : `${forgeUrl}/`;
-      const response = await fetch(
-        new URL("v1/audio/transcriptions", baseUrl).toString(),
-        {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${forgeKey}`,
-          },
-          body: formData,
-        }
-      );
-
-      if (response.ok) {
-        const data = (await response.json()) as {
-          segments?: { start: number; end: number; text: string }[];
-        };
-
-        if (data.segments && data.segments.length > 0) {
-          return data.segments.map((seg, i) => ({
-            index: i + 1,
-            start: seg.start,
-            end: seg.end,
-            text: seg.text.trim(),
-          }));
-        }
-      }
+    if (response.text) {
+      return [{ index: 1, start: 0, end: 5, text: response.text.trim() }];
     }
   } catch (error) {
-    console.warn("[Subtitle] ASR failed:", String(error));
+    console.warn("[Subtitle] OpenAI Whisper ASR failed:", String(error));
   }
 
-  // 降级：生成模拟字幕
   return generateMockSubtitles();
 }
 
@@ -172,7 +152,8 @@ async function translateSubtitles(
   const allText = entries.map((e) => e.text).join("\n---\n");
 
   try {
-    const result = await invokeLLM({
+    const result = await openai.chat.completions.create({
+      model: "gpt-4o",
       messages: [
         {
           role: "user",
@@ -321,7 +302,8 @@ async function saveSubtitle(
 
 // 注册字幕任务处理器
 registerTaskHandler("subtitle", runSubtitle);
-registerTaskHandler("combined", runSubtitle);
+
+export { runSubtitle };
 
 export async function getSubtitlesByTaskId(
   taskId: number

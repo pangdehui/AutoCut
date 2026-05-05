@@ -3,7 +3,7 @@ import { videoAnalysis, videos } from "../../drizzle/schema";
 import { eq } from "drizzle-orm";
 import type { ProcessingTask } from "../../drizzle/schema";
 import { registerTaskHandler } from "./taskService";
-import { invokeLLM } from "../_core/llm";
+import { openai } from "../_core/openai";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
@@ -110,7 +110,8 @@ async function analyzeWithAI(
   try {
     await updateProgress(30);
 
-    const result = await invokeLLM({
+    const result = await openai.chat.completions.create({
+      model: "gpt-4o",
       messages: [
         {
           role: "user",
@@ -120,6 +121,7 @@ async function analyzeWithAI(
           ],
         },
       ],
+      max_tokens: 2000,
     });
 
     await updateProgress(80);
@@ -251,7 +253,22 @@ async function saveAnalysisResult(
 
 // 注册分析任务处理器
 registerTaskHandler("analysis", runAnalysis);
-registerTaskHandler("combined", runAnalysis);
+
+async function runCombined(
+  task: ProcessingTask,
+  updateProgress: (progress: number) => Promise<void>
+): Promise<Record<string, unknown>> {
+  const analysisResult = await runAnalysis(task, async (p) =>
+    updateProgress(Math.round(p * 0.5))
+  );
+  const { runSubtitle } = await import("./subtitleService");
+  const subtitleResult = await runSubtitle(task, async (p) =>
+    updateProgress(50 + Math.round(p * 0.5))
+  );
+  return { analysis: analysisResult, subtitle: subtitleResult };
+}
+
+registerTaskHandler("combined", runCombined);
 
 export async function getAnalysisByTaskId(
   taskId: number
