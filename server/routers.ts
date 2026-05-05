@@ -7,6 +7,7 @@ import { sendRegisterCode, registerWithEmail, sendLoginCode, loginWithCode } fro
 import { getUserCredits, initializeCreditRates, rechargeCredits, deductCreditsAdmin } from "./services/creditService";
 import { getUserVideos, getVideoById } from "./services/videoService";
 import { createTask, getUserTasks, getTaskById, deleteTask } from "./services/taskService";
+import { getAnalysisByTaskId } from "./services/analysisService";
 
 // 初始化积分费率
 initializeCreditRates().catch(console.error);
@@ -99,6 +100,16 @@ export const appRouter = router({
           return { success: false, message: "权限不足" };
         }
         return await deductCreditsAdmin(input.userId, input.amount, input.description);
+      }),
+  }),
+
+  analysis: router({
+    byTaskId: protectedProcedure
+      .input(z.object({ taskId: z.number() }))
+      .query(async ({ input }) => {
+        const result = await getAnalysisByTaskId(input.taskId);
+        if (!result) return { success: false, message: "分析结果不存在" };
+        return { success: true, data: result };
       }),
   }),
 

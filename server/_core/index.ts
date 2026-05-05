@@ -11,6 +11,7 @@ import { serveStatic, setupVite } from "./vite";
 import multer from "multer";
 import { sdk } from "./sdk";
 import { validateVideoFile, saveVideo } from "../services/videoService";
+import "../services/analysisService";
 import path from "node:path";
 import fs from "node:fs";
 
