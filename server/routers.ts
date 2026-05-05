@@ -9,7 +9,7 @@ import { getUserVideos, getVideoById } from "./services/videoService";
 import { createTask, getUserTasks, getTaskById, deleteTask } from "./services/taskService";
 import { getAnalysisByTaskId } from "./services/analysisService";
 import { getSubtitlesByTaskId } from "./services/subtitleService";
-import { listUsers, setUserActive, setUserRole, getCreditTransactions, getTaskStats, listAllTasks } from "./services/adminService";
+import { listUsers, setUserActive, setUserRole, getCreditTransactions, getTaskStats, listAllTasks, getOverviewStats, getDailyUserRegistrations, getDailyCreditConsumption, getDailyTaskCounts, getAvgProcessingDuration } from "./services/adminService";
 
 // 初始化积分费率
 initializeCreditRates().catch(console.error);
@@ -226,6 +226,36 @@ export const appRouter = router({
     listAllTasks: protectedProcedure.query(async ({ ctx }) => {
       if (ctx.user.role !== "admin") return { success: false, data: [] };
       const data = await listAllTasks();
+      return { success: true, data };
+    }),
+
+    overviewStats: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "admin") return { success: false, data: null };
+      const data = await getOverviewStats();
+      return { success: true, data };
+    }),
+
+    dailyUserRegistrations: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "admin") return { success: false, data: [] };
+      const data = await getDailyUserRegistrations();
+      return { success: true, data };
+    }),
+
+    dailyCreditConsumption: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "admin") return { success: false, data: [] };
+      const data = await getDailyCreditConsumption();
+      return { success: true, data };
+    }),
+
+    dailyTaskCounts: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "admin") return { success: false, data: [] };
+      const data = await getDailyTaskCounts();
+      return { success: true, data };
+    }),
+
+    avgProcessingDuration: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "admin") return { success: false, data: [] };
+      const data = await getAvgProcessingDuration();
       return { success: true, data };
     }),
   }),

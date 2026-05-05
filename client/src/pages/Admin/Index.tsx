@@ -1,9 +1,10 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, Users, Zap, Activity } from "lucide-react";
+import { Loader2, Users, Zap, Activity, BarChart2 } from "lucide-react";
 import UserManagement from "./UserManagement";
 import CreditManagement from "./CreditManagement";
 import TaskMonitor from "./TaskMonitor";
+import Statistics from "./Statistics";
 
 export default function AdminPage() {
   const { user, loading } = useAuth();
@@ -72,6 +73,10 @@ export default function AdminPage() {
               <Activity className="h-4 w-4" />
               任务监控
             </TabsTrigger>
+            <TabsTrigger value="stats" className="flex items-center gap-2">
+              <BarChart2 className="h-4 w-4" />
+              数据统计
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="users">
@@ -84,6 +89,10 @@ export default function AdminPage() {
 
           <TabsContent value="tasks">
             <TaskMonitor />
+          </TabsContent>
+
+          <TabsContent value="stats">
+            <Statistics />
           </TabsContent>
         </Tabs>
       </div>
