@@ -6,6 +6,7 @@ import { z } from "zod";
 import { sendRegisterCode, registerWithEmail, sendLoginCode, loginWithCode } from "./services/authService";
 import { getUserCredits, initializeCreditRates, rechargeCredits, deductCreditsAdmin } from "./services/creditService";
 import { getUserVideos, getVideoById } from "./services/videoService";
+import { createTask, getUserTasks, getTaskById, deleteTask } from "./services/taskService";
 
 // 初始化积分费率
 initializeCreditRates().catch(console.error);
@@ -98,6 +99,50 @@ export const appRouter = router({
           return { success: false, message: "权限不足" };
         }
         return await deductCreditsAdmin(input.userId, input.amount, input.description);
+      }),
+  }),
+
+  tasks: router({
+    list: protectedProcedure
+      .input(z.object({ status: z.string().optional() }))
+      .query(async ({ input, ctx }) => {
+        const tasks = await getUserTasks(ctx.user.id, input.status);
+        return { success: true, data: tasks };
+      }),
+
+    getById: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const task = await getTaskById(input.id, ctx.user.id);
+        if (!task) return { success: false, message: "任务不存在" };
+        return { success: true, data: task };
+      }),
+
+    create: protectedProcedure
+      .input(
+        z.object({
+          videoId: z.number(),
+          taskType: z.enum(["analysis", "editing", "subtitle", "combined"]),
+          parameters: z.any().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const task = await createTask({
+          userId: ctx.user.id,
+          videoId: input.videoId,
+          taskType: input.taskType,
+          parameters: input.parameters,
+        });
+        if (!task) return { success: false, message: "创建任务失败" };
+        return { success: true, data: task };
+      }),
+
+    remove: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const ok = await deleteTask(input.id, ctx.user.id);
+        if (!ok) return { success: false, message: "删除失败（任务不存在或正在处理中）" };
+        return { success: true };
       }),
   }),
 

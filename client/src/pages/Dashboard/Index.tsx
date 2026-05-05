@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import VideoUpload from "./VideoUpload";
+import TaskList from "./TaskList";
 import { Loader2, Upload, Zap, Settings } from "lucide-react";
 
 export default function Dashboard() {
@@ -119,17 +120,7 @@ export default function Dashboard() {
 
           {/* 任务列表标签页 */}
           <TabsContent value="tasks">
-            <Card>
-              <CardHeader>
-                <CardTitle>处理任务</CardTitle>
-                <CardDescription>查看您的所有处理任务</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="text-center py-8">
-                  <p className="text-muted-foreground">暂无任务</p>
-                </div>
-              </CardContent>
-            </Card>
+            <TaskList />
           </TabsContent>
 
           {/* 管理标签页 */}
