@@ -5,7 +5,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import VideoUpload from "./VideoUpload";
 import TaskList from "./TaskList";
-import { Loader2, Upload, Zap, Settings } from "lucide-react";
+import EditingPanel from "./EditingPanel";
+import { Loader2, Upload, Zap, Settings, Scissors } from "lucide-react";
 
 export default function Dashboard() {
   const { user, loading } = useAuth();
@@ -102,6 +103,10 @@ export default function Dashboard() {
               <Upload className="h-4 w-4" />
               上传视频
             </TabsTrigger>
+            <TabsTrigger value="edit" className="flex items-center gap-2">
+              <Scissors className="h-4 w-4" />
+              视频剪辑
+            </TabsTrigger>
             <TabsTrigger value="tasks" className="flex items-center gap-2">
               任务列表
             </TabsTrigger>
@@ -116,6 +121,11 @@ export default function Dashboard() {
           {/* 上传标签页 */}
           <TabsContent value="upload">
             <VideoUpload />
+          </TabsContent>
+
+          {/* 视频剪辑标签页 */}
+          <TabsContent value="edit">
+            <EditingPanel />
           </TabsContent>
 
           {/* 任务列表标签页 */}

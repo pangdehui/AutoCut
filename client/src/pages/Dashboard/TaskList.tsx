@@ -12,6 +12,14 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   combined: "综合处理",
 };
 
+const OPERATION_LABELS: Record<string, string> = {
+  trim: "裁剪",
+  slice: "切片合并",
+  resize: "调整分辨率",
+  watermark: "添加水印",
+  speed: "变速",
+};
+
 const STATUS_FILTERS = [
   { value: "all", label: "全部" },
   { value: "queued", label: "排队中" },
@@ -148,6 +156,11 @@ export default function TaskList() {
                       <div>
                         <p className="font-medium text-sm">
                           {TASK_TYPE_LABELS[task.taskType] || task.taskType}
+                          {(task.parameters as any)?.operation && (
+                            <span className="text-xs text-muted-foreground ml-2">
+                              ({OPERATION_LABELS[(task.parameters as any).operation] || (task.parameters as any).operation})
+                            </span>
+                          )}
                         </p>
                         <p className="text-xs text-muted-foreground">
                           任务 #{task.id} · 视频 #{task.videoId}
