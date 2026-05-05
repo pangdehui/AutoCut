@@ -43,6 +43,12 @@ The core video processing features are still under development, but the user sys
 - Light and dark themes — easy on the eyes at night
 - Responsive layout — works on mobile too
 
+### 🤖 AI Video Analysis
+- **Smart Frame Extraction**: FFmpeg extracts 6 key frames evenly distributed across the video
+- **Multimodal Analysis**: AI model analyzes frames, generating scene descriptions, keywords, highlights
+- **Graceful Degradation**: Falls back to mock analysis when AI is unavailable
+- **Result Viewer**: Scene analysis, keyword tag cloud, highlight scores, content category & summary
+
 ### ⚙️ Task Queue
 - **State Machine**: queued → processing → completed/failed, full lifecycle management
 - **Auto Processing**: Server automatically polls the queue and processes pending tasks
@@ -67,7 +73,7 @@ To be honest, everything below **still needs to be done**. I keep a detailed dev
 | Feature | Current State | What Needs to Be Done |
 |---|---|---|
 | **Async Task Queue** | ✅ Done | In-memory queue + pluggable handlers, upgradeable to Bull/RabbitMQ later |
-| **AI Video Analysis** | Schema exists, logic is empty | Frame extraction → multimodal model analysis → scene descriptions + keywords + highlight detection |
+| **AI Video Analysis** | ✅ Done | FFmpeg frame extraction + multimodal AI analysis + mock fallback, extensible for better models |
 | **FFmpeg Editing** | Not started at all | Slicing, merging, resizing, watermarking, trimming intros/outros |
 
 ### 🟡 Medium Priority (Important but Can Wait)
@@ -393,7 +399,7 @@ A: That's because of shadcn/ui. It's not a typical npm package — instead, it c
 I don't want to give you the impression this project is perfect. Here's what I already know needs work:
 
 1. **Email is fake**: `server/services/emailService.ts` only does `console.log` — you'll need to wire up SendGrid or Mailgun for real use
-2. **Video processing is entirely unimplemented**: There's zero code for FFmpeg, AI analysis, or subtitles. The database tables exist as forward-looking placeholders
+2. **FFmpeg editing and subtitles not yet built**: Video editing and subtitle generation are unimplemented. AI analysis is now functional
 3. **Task queue is in-memory**: The queue runs inside the server process and is lost on restart. Upgradeable to Bull/RabbitMQ for persistence and distributed processing
 4. **Cloud storage depends on Forge**: `storage.ts` S3 upload logic relies on Forge proxy. Video uploads use local storage — if you want cloud storage (AWS S3, Cloudflare R2, etc.), you'll need to adapt it
 5. **Almost no tests**: The entire project has exactly 1 test file that tests the logout function. A proper project would have dozens or hundreds
