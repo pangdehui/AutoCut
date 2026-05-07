@@ -126,6 +126,9 @@ export async function getVideoById(id: number, userId: number): Promise<Video | 
 export interface VideoWithStatus extends Video {
   analysisStatus: "none" | "queued" | "processing" | "completed" | "failed";
   analysisTaskId: number | null;
+  analysisSummary: string | null;
+  analysisCategory: string | null;
+  analysisKeywords: string[] | null;
 }
 
 export async function getUserVideosWithStatus(userId: number): Promise<VideoWithStatus[]> {
@@ -155,6 +158,7 @@ export async function getUserVideosWithStatus(userId: number): Promise<VideoWith
 
   // 按视频分组，取最新任务
   const latestTaskByVideo = new Map<number, { status: string; id: number }>();
+  const completedTaskIds: number[] = [];
   for (const t of tasks) {
     const existing = latestTaskByVideo.get(t.videoId);
     if (!existing || t.createdAt > (existing as any)._createdAt) {
@@ -163,15 +167,41 @@ export async function getUserVideosWithStatus(userId: number): Promise<VideoWith
         id: t.id,
         _createdAt: t.createdAt,
       } as any);
+      if (t.status === "completed") {
+        completedTaskIds.push(t.id);
+      }
+    }
+  }
+
+  // 查询已完成任务的分析结果摘要
+  const analysisMap = new Map<number, { summary: string; category: string; keywords: string[] }>();
+  if (completedTaskIds.length > 0) {
+    const analyses = await db
+      .select()
+      .from(videoAnalysis)
+      .where(inArray(videoAnalysis.taskId, completedTaskIds));
+
+    for (const a of analyses) {
+      const metadata = (a.metadata || {}) as Record<string, any>;
+      const keywords = (a.keywords || []) as string[];
+      analysisMap.set(a.taskId, {
+        summary: metadata.summary || "",
+        category: metadata.category || "",
+        keywords,
+      });
     }
   }
 
   return videoList.map((v) => {
     const task = latestTaskByVideo.get(v.id);
+    const analysis = task ? analysisMap.get(task.id) : null;
     return {
       ...v,
       analysisStatus: (task?.status as any) || "none",
       analysisTaskId: task?.id ?? null,
+      analysisSummary: analysis?.summary || null,
+      analysisCategory: analysis?.category || null,
+      analysisKeywords: analysis?.keywords || null,
     };
   });
 }

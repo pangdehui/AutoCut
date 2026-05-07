@@ -2,11 +2,12 @@ import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import {
   Loader2, Play, Trash2, FileVideo, Calendar, HardDrive,
-  CheckCircle2, AlertCircle, Clock, Eye,
+  CheckCircle2, AlertCircle, Clock, ChevronDown, ChevronUp, Tag,
 } from "lucide-react";
 import AnalysisViewer from "./AnalysisViewer";
 
@@ -32,7 +33,6 @@ const STATUS_CONFIG: Record<AnalysisStatus, { label: string; className: string; 
 };
 
 export default function VideoList() {
-  const [expandedVideo, setExpandedVideo] = useState<number | null>(null);
   const [expandedTaskId, setExpandedTaskId] = useState<number | null>(null);
   const videosQuery = trpc.videos.listWithStatus.useQuery(undefined, { refetchInterval: 5000 });
   const deleteVideoMutation = trpc.videos.delete?.useMutation();
@@ -63,13 +63,6 @@ export default function VideoList() {
     } catch (error: any) {
       toast.error(error?.message || '创建分析任务失败');
     }
-  };
-
-  const handleViewAnalysis = (videoId: number, taskId: number | null) => {
-    if (taskId) {
-      setExpandedTaskId(expandedTaskId === taskId ? null : taskId);
-    }
-    setExpandedVideo(expandedVideo === videoId ? null : videoId);
   };
 
   if (videosQuery.isLoading) {
@@ -104,96 +97,127 @@ export default function VideoList() {
         {videos.map((video: any) => {
           const status: AnalysisStatus = video.analysisStatus || "none";
           const statusCfg = STATUS_CONFIG[status];
+          const hasAnalysis = status === "completed" && video.analysisSummary;
+          const isExpanded = expandedTaskId === video.analysisTaskId;
 
           return (
-            <div key={video.id}>
-              <Card className="hover:shadow-md transition-shadow">
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between mb-1">
-                    <CardTitle className="text-lg flex items-center gap-2 truncate">
-                      <FileVideo className="h-5 w-5 shrink-0" />
-                      <span className="truncate">{video.originalName}</span>
-                    </CardTitle>
+            <Card key={video.id} className="hover:shadow-md transition-shadow flex flex-col">
+              {/* 头部：文件名 + 基本信息 */}
+              <CardHeader className="pb-2">
+                <div className="flex items-start justify-between">
+                  <CardTitle className="text-base flex items-center gap-2 truncate">
+                    <FileVideo className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{video.originalName}</span>
+                  </CardTitle>
+                </div>
+                <CardDescription>
+                  <div className="flex items-center gap-3 text-xs mt-1">
+                    <span className="flex items-center gap-1">
+                      <HardDrive className="h-3 w-3" />
+                      {formatSize(video.fileSize)}
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <Calendar className="h-3 w-3" />
+                      {formatDate(video.createdAt)}
+                    </span>
                   </div>
-                  <CardDescription className="space-y-2">
-                    <div className="flex items-center gap-3 text-sm">
-                      <span className="flex items-center gap-1">
-                        <HardDrive className="h-4 w-4" />
-                        {formatSize(video.fileSize)}
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <Calendar className="h-4 w-4" />
-                        {formatDate(video.createdAt)}
-                      </span>
+                </CardDescription>
+              </CardHeader>
+
+              {/* 分析状态徽章 */}
+              <div className="px-6 pb-2">
+                <Badge className={`inline-flex items-center gap-1 text-xs ${statusCfg.className}`}>
+                  {statusCfg.icon}
+                  {statusCfg.label}
+                </Badge>
+                {status === "processing" && (
+                  <div className="mt-2">
+                    <Progress value={video.progress || 0} className="h-1.5" />
+                  </div>
+                )}
+              </div>
+
+              {/* 已完成：直接展示分析摘要 */}
+              {hasAnalysis && (
+                <CardContent className="pt-0 pb-2 flex-1">
+                  <div className="space-y-2 p-3 rounded-lg bg-accent/5 border border-accent/10">
+                    {/* 分类 + 摘要 */}
+                    <div>
+                      {video.analysisCategory && (
+                        <Badge variant="outline" className="mb-1 text-xs">
+                          {video.analysisCategory}
+                        </Badge>
+                      )}
+                      <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
+                        {video.analysisSummary}
+                      </p>
                     </div>
-                    {/* 分析状态徽章 */}
-                    <Badge
-                      variant="secondary"
-                      className={`inline-flex items-center gap-1 text-xs ${statusCfg.className}`}
-                    >
-                      {statusCfg.icon}
-                      {statusCfg.label}
-                    </Badge>
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  <div className="flex gap-2">
-                    {status === "none" || status === "failed" ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleAnalyze(video.id)}
-                        className="flex-1"
-                      >
-                        <Play className="h-4 w-4 mr-1" />
-                        {status === "failed" ? "重新分析" : "分析内容"}
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={status !== "completed"}
-                        onClick={() => handleViewAnalysis(video.id, video.analysisTaskId)}
-                        className="flex-1"
-                      >
-                        {status === "processing" ? (
-                          <>
-                            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                            分析中...
-                          </>
-                        ) : status === "queued" ? (
-                          <>
-                            <Clock className="h-4 w-4 mr-1" />
-                            等待中...
-                          </>
-                        ) : (
-                          <>
-                            <Eye className="h-4 w-4 mr-1" />
-                            查看分析
-                          </>
-                        )}
-                      </Button>
+
+                    {/* 关键词 */}
+                    {video.analysisKeywords && video.analysisKeywords.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {video.analysisKeywords.slice(0, 6).map((kw: string, i: number) => (
+                          <Badge key={i} variant="secondary" className="text-xs">
+                            <Tag className="h-2.5 w-2.5 mr-0.5" />
+                            {kw}
+                          </Badge>
+                        ))}
+                      </div>
                     )}
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      onClick={() => handleDelete(video.id)}
+
+                    {/* 展开/收起详细分析 */}
+                    <button
+                      className="flex items-center gap-1 text-xs text-accent hover:underline"
+                      onClick={() =>
+                        setExpandedTaskId(isExpanded ? null : video.analysisTaskId)
+                      }
                     >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                      {isExpanded ? (
+                        <><ChevronUp className="h-3 w-3" />收起详情</>
+                      ) : (
+                        <><ChevronDown className="h-3 w-3" />场景 & 精彩片段</>
+                      )}
+                    </button>
                   </div>
                 </CardContent>
-              </Card>
-
-              {/* 展开的分析结果 */}
-              {expandedVideo === video.id && expandedTaskId && status === "completed" && (
-                <Card className="mt-2 border-accent/20">
-                  <CardContent className="pt-4 pb-4">
-                    <AnalysisViewer taskId={expandedTaskId} />
-                  </CardContent>
-                </Card>
               )}
-            </div>
+
+              {/* 底部操作按钮 */}
+              <CardContent className="pt-0 mt-auto">
+                <div className="flex gap-2">
+                  {status === "none" || status === "failed" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleAnalyze(video.id)}
+                      className="flex-1"
+                    >
+                      <Play className="h-4 w-4 mr-1" />
+                      {status === "failed" ? "重新分析" : "分析内容"}
+                    </Button>
+                  ) : status === "processing" || status === "queued" ? (
+                    <Button size="sm" variant="outline" disabled className="flex-1">
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                      分析中...
+                    </Button>
+                  ) : null}
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => handleDelete(video.id)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              </CardContent>
+
+              {/* 展开的完整 AnalysisViewer */}
+              {isExpanded && (
+                <div className="px-6 pb-4">
+                  <AnalysisViewer taskId={video.analysisTaskId!} />
+                </div>
+              )}
+            </Card>
           );
         })}
       </div>
