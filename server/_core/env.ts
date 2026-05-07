@@ -11,4 +11,6 @@ export const ENV = {
   openaiBaseUrl: process.env.OPENAI_BASE_URL ?? "",
   openaiChatModel: process.env.OPENAI_CHAT_MODEL ?? "gpt-4o",
   openaiWhisperModel: process.env.OPENAI_WHISPER_MODEL ?? "whisper-1",
+  gatewayBaseUrl: process.env.GATEWAY_BASE_URL ?? "",
+  gatewayApiKey: process.env.GATEWAY_API_KEY ?? "",
 };

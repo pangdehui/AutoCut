@@ -3,7 +3,7 @@ import { processingTasks, videos } from "../../drizzle/schema";
 import { eq, desc, and } from "drizzle-orm";
 import type { ProcessingTask } from "../../drizzle/schema";
 
-type TaskType = "analysis" | "editing" | "subtitle" | "combined" | "ai_edit";
+type TaskType = "analysis" | "editing" | "subtitle" | "combined" | "ai_edit" | "tts";
 
 interface CreateTaskParams {
   userId: number;

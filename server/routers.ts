@@ -168,7 +168,7 @@ export const appRouter = router({
       .input(
         z.object({
           videoId: z.number(),
-          taskType: z.enum(["analysis", "editing", "subtitle", "combined", "ai_edit"]),
+          taskType: z.enum(["analysis", "editing", "subtitle", "combined", "ai_edit", "tts"]),
           parameters: z.any().optional(),
         })
       )
@@ -180,7 +180,7 @@ export const appRouter = router({
         }
 
         // 计算所需积分（暂时使用固定值，实际应根据视频时长计算）
-        const requiredCredits = input.taskType === "analysis" ? 10 : input.taskType === "editing" || input.taskType === "ai_edit" ? 15 : 8;
+        const requiredCredits = input.taskType === "analysis" ? 10 : input.taskType === "editing" || input.taskType === "ai_edit" ? 15 : input.taskType === "tts" ? 5 : 8;
 
         // 检查用户积分
         const userCredits = await getUserCredits(ctx.user.id);
@@ -198,7 +198,7 @@ export const appRouter = router({
         if (!task) return { success: false, message: "创建任务失败" };
 
         // 扣除积分
-        const creditType: "analysis" | "editing" | "subtitle" = input.taskType === "combined" ? "analysis" : input.taskType === "ai_edit" ? "editing" : input.taskType;
+        const creditType: "analysis" | "editing" | "subtitle" = input.taskType === "combined" ? "analysis" : input.taskType === "ai_edit" ? "editing" : input.taskType === "tts" ? "subtitle" : input.taskType;
         const deductResult = await deductCredits(ctx.user.id, requiredCredits, creditType, task.id);
         if (!deductResult.success) {
           // 如果扣积分失败，删除任务
