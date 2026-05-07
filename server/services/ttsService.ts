@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import type { ProcessingTask } from "../../drizzle/schema";
 import { registerTaskHandler } from "./taskService";
 import { submitGatewayTask, waitForGatewayTask } from "../_core/gateway";
+import { ENV } from "../_core/env";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
@@ -77,11 +78,16 @@ async function runTts(
     throw new Error("TTS 未返回音频文件");
   }
 
-  // 3. 下载音频文件
-  const audioExt = path.extname(ttsResult.resultUrl) || ".mp3";
+  // 3. 下载音频文件（网关可能返回相对路径，需补全）
+  let audioUrl = ttsResult.resultUrl;
+  if (audioUrl.startsWith("/")) {
+    audioUrl = ENV.gatewayBaseUrl.replace(/\/$/, "") + audioUrl;
+  }
+
+  const audioExt = path.extname(audioUrl.split("?")[0]) || ".mp3";
   const audioPath = path.join(AUDIO_DIR, `tts_${task.id}${audioExt}`);
 
-  const audioResp = await fetch(ttsResult.resultUrl);
+  const audioResp = await fetch(audioUrl);
   if (!audioResp.ok) throw new Error("下载 TTS 音频失败");
   const audioBuffer = Buffer.from(await audioResp.arrayBuffer());
   fs.writeFileSync(audioPath, audioBuffer);

@@ -1,7 +1,13 @@
 import { ENV } from "./env";
 
-const BASE = ENV.gatewayBaseUrl.replace(/\/$/, "");
-const TOKEN = ENV.gatewayApiKey;
+function requireBase(): string {
+  if (!ENV.gatewayBaseUrl) throw new Error("请配置 GATEWAY_BASE_URL 环境变量");
+  return ENV.gatewayBaseUrl.replace(/\/$/, "");
+}
+function requireToken(): string {
+  if (!ENV.gatewayApiKey) throw new Error("请配置 GATEWAY_API_KEY 环境变量");
+  return ENV.gatewayApiKey;
+}
 
 interface GatewayTask {
   taskId: number;
@@ -24,10 +30,10 @@ export async function submitGatewayTask(
   serviceName: string,
   params: Record<string, unknown>
 ): Promise<ForwardResult> {
-  const resp = await fetch(`${BASE}/api/gateway/forward`, {
+  const resp = await fetch(`${requireBase()}/api/gateway/forward`, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${TOKEN}`,
+      "Authorization": `Bearer ${requireToken()}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ serviceName, params }),
@@ -42,8 +48,8 @@ export async function submitGatewayTask(
 }
 
 export async function getGatewayTask(taskId: number): Promise<{ success: boolean; data: GatewayTask }> {
-  const resp = await fetch(`${BASE}/api/gateway/task/${taskId}`, {
-    headers: { "Authorization": `Bearer ${TOKEN}` },
+  const resp = await fetch(`${requireBase()}/api/gateway/task/${taskId}`, {
+    headers: { "Authorization": `Bearer ${requireToken()}` },
   });
 
   if (!resp.ok) {
