@@ -178,6 +178,111 @@ async function startServer() {
     }
   });
 
+  // 视频流播放接口（支持 Range 请求，可拖动进度条）
+  app.get("/api/videos/stream/:id", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (!user) return res.status(401).json({ success: false, message: "请先登录" });
+
+      const videoId = parseInt(req.params.id);
+      if (isNaN(videoId)) return res.status(400).json({ success: false, message: "无效的视频 ID" });
+
+      const { getDb } = await import("../db");
+      const db = await getDb();
+      if (!db) return res.status(500).json({ success: false, message: "数据库不可用" });
+
+      const result = await db
+        .select({ filePath: videos.filePath, mimeType: videos.mimeType })
+        .from(videos)
+        .where(eq(videos.id, videoId))
+        .limit(1);
+
+      if (result.length === 0) return res.status(404).json({ success: false, message: "视频不存在" });
+
+      const videoPath = result[0].filePath;
+      if (!fs.existsSync(videoPath)) return res.status(404).json({ success: false, message: "视频文件不存在" });
+
+      const stat = fs.statSync(videoPath);
+      const fileSize = stat.size;
+      const mimeType = result[0].mimeType || "video/mp4";
+      const range = req.headers.range;
+
+      if (range) {
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const chunkSize = end - start + 1;
+
+        res.writeHead(206, {
+          "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+          "Accept-Ranges": "bytes",
+          "Content-Length": chunkSize,
+          "Content-Type": mimeType,
+        });
+
+        fs.createReadStream(videoPath, { start, end }).pipe(res);
+      } else {
+        res.writeHead(200, {
+          "Content-Length": fileSize,
+          "Content-Type": mimeType,
+          "Accept-Ranges": "bytes",
+        });
+        fs.createReadStream(videoPath).pipe(res);
+      }
+    } catch (error) {
+      console.error("[Stream] Error:", error);
+      res.status(500).json({ success: false, message: "视频播放失败" });
+    }
+  });
+
+  // 通用文件流接口（编辑产出、音频等）
+  app.get("/api/files/stream", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (!user) return res.status(401).json({ success: false, message: "请先登录" });
+
+      const filePath = req.query.path as string;
+      if (!filePath) return res.status(400).json({ success: false, message: "缺少路径参数" });
+
+      const absPath = path.resolve(filePath);
+      if (!fs.existsSync(absPath)) return res.status(404).json({ success: false, message: "文件不存在" });
+
+      const stat = fs.statSync(absPath);
+      const ext = path.extname(absPath).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        ".mp4": "video/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav",
+        ".srt": "text/plain", ".vtt": "text/vtt",
+      };
+      const mimeType = mimeMap[ext] || "application/octet-stream";
+      const range = req.headers.range;
+
+      if (range && (ext === ".mp4" || ext === ".mp3")) {
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+        const chunkSize = end - start + 1;
+
+        res.writeHead(206, {
+          "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+          "Accept-Ranges": "bytes",
+          "Content-Length": chunkSize,
+          "Content-Type": mimeType,
+        });
+        fs.createReadStream(absPath, { start, end }).pipe(res);
+      } else {
+        res.writeHead(200, {
+          "Content-Length": stat.size,
+          "Content-Type": mimeType,
+          "Accept-Ranges": "bytes",
+        });
+        fs.createReadStream(absPath).pipe(res);
+      }
+    } catch (error) {
+      console.error("[FileStream] Error:", error);
+      res.status(500).json({ success: false, message: "文件读取失败" });
+    }
+  });
+
   registerStorageProxy(app);
   registerOAuthRoutes(app);
   // tRPC API

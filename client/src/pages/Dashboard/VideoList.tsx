@@ -11,6 +11,7 @@ import {
   CheckCircle2, AlertCircle, Clock, ChevronDown, ChevronUp, Tag, Wand2, Send,
 } from "lucide-react";
 import AnalysisViewer from "./AnalysisViewer";
+import VideoPlayer from "@/components/VideoPlayer";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + " B";
@@ -37,6 +38,7 @@ export default function VideoList() {
   const [expandedTaskId, setExpandedTaskId] = useState<number | null>(null);
   const [aiPrompt, setAiPrompt] = useState<Record<number, string>>({});
   const [editingVideoId, setEditingVideoId] = useState<number | null>(null);
+  const [player, setPlayer] = useState<{ open: boolean; videoId: number; title: string }>({ open: false, videoId: 0, title: "" });
   const videosQuery = trpc.videos.listWithStatus.useQuery(undefined, { refetchInterval: 5000 });
   const deleteVideoMutation = trpc.videos.delete?.useMutation();
   const createTaskMutation = trpc.tasks.create.useMutation();
@@ -135,16 +137,23 @@ export default function VideoList() {
           return (
             <Card key={video.id} className="hover:shadow-md transition-shadow flex flex-col overflow-hidden">
               {/* 视频封面 */}
-              <div className="relative aspect-video bg-muted overflow-hidden">
+              {/* 视频封面 + 播放按钮 */}
+              <div
+                className="relative aspect-video bg-muted overflow-hidden cursor-pointer group"
+                onClick={() => setPlayer({ open: true, videoId: video.id, title: video.originalName })}
+              >
                 <img
                   src={`/api/videos/thumbnail/${video.id}`}
                   alt={video.originalName}
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
                   onError={(e) => {
                     (e.target as HTMLImageElement).style.display = 'none';
                     (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
                   }}
                 />
+                <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/20 transition-colors">
+                  <Play className="h-10 w-10 text-white drop-shadow-lg opacity-0 group-hover:opacity-100 transition-opacity" fill="white" />
+                </div>
                 <div className="hidden absolute inset-0 flex items-center justify-center bg-muted">
                   <FileVideo className="h-12 w-12 text-muted-foreground" />
                 </div>
@@ -299,6 +308,14 @@ export default function VideoList() {
           );
         })}
       </div>
+
+      <VideoPlayer
+        open={player.open}
+        onClose={() => setPlayer({ open: false, videoId: 0, title: "" })}
+        title={player.title}
+        src={player.open ? `/api/videos/stream/${player.videoId}` : undefined}
+        poster={player.open ? `/api/videos/thumbnail/${player.videoId}` : undefined}
+      />
     </div>
   );
 }
