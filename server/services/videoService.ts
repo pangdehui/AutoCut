@@ -60,7 +60,8 @@ export async function saveVideo(
   originalName: string,
   mimeType: string,
   fileSize: number,
-  tempPath: string
+  tempPath: string,
+  projectId?: number
 ): Promise<Video> {
   const db = await getDb();
   if (!db) throw new Error("数据库连接失败");
@@ -82,6 +83,7 @@ export async function saveVideo(
       filePath,
       fileSize,
       mimeType,
+      projectId: projectId || null,
     })
     .$returningId();
 
@@ -94,14 +96,19 @@ export async function saveVideo(
   return created[0];
 }
 
-export async function getUserVideos(userId: number): Promise<Video[]> {
+export async function getUserVideos(userId: number, projectId?: number): Promise<Video[]> {
   const db = await getDb();
   if (!db) return [];
+
+  const filters = [eq(videos.userId, userId)];
+  if (projectId !== undefined) {
+    filters.push(eq(videos.projectId, projectId as any));
+  }
 
   return db
     .select()
     .from(videos)
-    .where(eq(videos.userId, userId))
+    .where(and(...filters))
     .orderBy(desc(videos.uploadedAt));
 }
 
@@ -131,14 +138,19 @@ export interface VideoWithStatus extends Video {
   analysisKeywords: string[] | null;
 }
 
-export async function getUserVideosWithStatus(userId: number): Promise<VideoWithStatus[]> {
+export async function getUserVideosWithStatus(userId: number, projectId?: number): Promise<VideoWithStatus[]> {
   const db = await getDb();
   if (!db) return [];
+
+  const filters = [eq(videos.userId, userId)];
+  if (projectId !== undefined) {
+    filters.push(eq(videos.projectId, projectId));
+  }
 
   const videoList = await db
     .select()
     .from(videos)
-    .where(eq(videos.userId, userId))
+    .where(and(...filters))
     .orderBy(desc(videos.uploadedAt));
 
   if (videoList.length === 0) return [];

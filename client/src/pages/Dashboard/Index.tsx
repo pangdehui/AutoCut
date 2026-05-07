@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,11 +9,15 @@ import TaskList from "./TaskList";
 import EditingPanel from "./EditingPanel";
 import SubtitlePanel from "./SubtitlePanel";
 import VideoList from "./VideoList";
-import { Loader2, Upload, Zap, Settings, Scissors, Subtitles, ListVideo } from "lucide-react";
+import ProjectList from "./ProjectList";
+import ProjectView from "./ProjectView";
+import { Loader2, Upload, Zap, Settings, Scissors, Subtitles, Folders } from "lucide-react";
 
 export default function Dashboard() {
   const { user, loading } = useAuth();
   const creditsQuery = trpc.credits.getBalance.useQuery(undefined, { enabled: !!user });
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState("projects");
 
   if (loading) {
     return (
@@ -101,15 +106,15 @@ export default function Dashboard() {
         </Card>
 
         {/* 功能标签页 */}
-        <Tabs defaultValue="upload" className="space-y-6">
+        <Tabs value={selectedProjectId ? "projects" : activeTab} onValueChange={(v) => { setActiveTab(v); setSelectedProjectId(null); }} className="space-y-6">
           <TabsList>
+            <TabsTrigger value="projects" className="flex items-center gap-2">
+              <Folders className="h-4 w-4" />
+              我的项目
+            </TabsTrigger>
             <TabsTrigger value="upload" className="flex items-center gap-2">
               <Upload className="h-4 w-4" />
               上传视频
-            </TabsTrigger>
-            <TabsTrigger value="videos" className="flex items-center gap-2">
-              <ListVideo className="h-4 w-4" />
-              我的视频
             </TabsTrigger>
             <TabsTrigger value="edit" className="flex items-center gap-2">
               <Scissors className="h-4 w-4" />
@@ -130,13 +135,20 @@ export default function Dashboard() {
             )}
           </TabsList>
 
-          {/* 上传标签页 */}
-          <TabsContent value="upload">
-            <VideoUpload />
+          {/* 项目标签页 */}
+          <TabsContent value="projects">
+            {selectedProjectId ? (
+              <ProjectView
+                projectId={selectedProjectId}
+                onBack={() => setSelectedProjectId(null)}
+              />
+            ) : (
+              <ProjectList onSelectProject={setSelectedProjectId} />
+            )}
           </TabsContent>
 
-          {/* 视频列表标签页 */}
-          <TabsContent value="videos">
+          {/* 上传标签页 */}
+          <TabsContent value="upload">
             <VideoList />
           </TabsContent>
 

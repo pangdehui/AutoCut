@@ -7,6 +7,7 @@ import { z } from "zod";
 import { sendRegisterCode, registerWithEmail, sendLoginCode, loginWithCode } from "./services/authService";
 import { getUserCredits, initializeCreditRates, rechargeCredits, deductCreditsAdmin, calculateRequiredCredits, deductCredits } from "./services/creditService";
 import { getUserVideos, getUserVideosWithStatus, getVideoById, deleteVideo } from "./services/videoService";
+import { createProject, getUserProjects, getProjectById, getProjectWithVideoCount, deleteProject } from "./services/projectService";
 import { createTask, getUserTasks, getTaskById, deleteTask } from "./services/taskService";
 import { getAnalysisByTaskId } from "./services/analysisService";
 import { getSubtitlesByTaskId } from "./services/subtitleService";
@@ -217,22 +218,57 @@ export const appRouter = router({
       }),
   }),
 
-  videos: router({
+  projects: router({
     list: protectedProcedure.query(async ({ ctx }) => {
-      const videos = await getUserVideos(ctx.user.id);
-      return {
-        success: true,
-        data: videos,
-      };
+      const projects = await getUserProjects(ctx.user.id);
+      return { success: true, data: projects };
     }),
 
-    listWithStatus: protectedProcedure.query(async ({ ctx }) => {
-      const videos = await getUserVideosWithStatus(ctx.user.id);
-      return {
-        success: true,
-        data: videos,
-      };
-    }),
+    getById: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const project = await getProjectWithVideoCount(input.id, ctx.user.id);
+        if (!project) return { success: false, message: "项目不存在" };
+        return { success: true, data: project };
+      }),
+
+    create: protectedProcedure
+      .input(z.object({ name: z.string().min(1), description: z.string().optional() }))
+      .mutation(async ({ input, ctx }) => {
+        const project = await createProject(ctx.user.id, input.name, input.description);
+        if (!project) return { success: false, message: "创建失败" };
+        return { success: true, data: project };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const ok = await deleteProject(input.id, ctx.user.id);
+        if (!ok) return { success: false, message: "删除失败" };
+        return { success: true };
+      }),
+  }),
+
+  videos: router({
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number().optional() }).optional())
+      .query(async ({ input, ctx }) => {
+        const videos = await getUserVideos(ctx.user.id, input?.projectId);
+        return {
+          success: true,
+          data: videos,
+        };
+      }),
+
+    listWithStatus: protectedProcedure
+      .input(z.object({ projectId: z.number().optional() }).optional())
+      .query(async ({ input, ctx }) => {
+        const videos = await getUserVideosWithStatus(ctx.user.id, input?.projectId);
+        return {
+          success: true,
+          data: videos,
+        };
+      }),
 
     getById: protectedProcedure
       .input(z.object({ id: z.number() }))

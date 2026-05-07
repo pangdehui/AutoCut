@@ -75,12 +75,25 @@ export const videos = mysqlTable("videos", {
   fileSize: bigint("fileSize", { mode: "number" }).notNull(), // 字节数
   duration: decimal("duration", { precision: 10, scale: 2 }), // 视频时长（秒）
   mimeType: varchar("mimeType", { length: 50 }).notNull(),
+  projectId: int("projectId"),
   uploadedAt: timestamp("uploadedAt").defaultNow().notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
 export type Video = typeof videos.$inferSelect;
 export type InsertVideo = typeof videos.$inferInsert;
+
+// 项目表
+export const projects = mysqlTable("projects", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type Project = typeof projects.$inferSelect;
+export type InsertProject = typeof projects.$inferInsert;
 
 // 处理任务表
 export const processingTasks = mysqlTable("processingTasks", {

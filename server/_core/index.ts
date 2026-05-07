@@ -69,6 +69,8 @@ async function startServer() {
         return res.status(400).json({ success: false, message: "没有选择文件" });
       }
 
+      const projectId = req.body.projectId ? parseInt(req.body.projectId) : undefined;
+
       const results = [];
       for (const file of files) {
         const validation = validateVideoFile(
@@ -92,7 +94,8 @@ async function startServer() {
           file.originalname,
           file.mimetype,
           file.size,
-          file.path
+          file.path,
+          projectId
         );
 
         fs.unlinkSync(file.path);
