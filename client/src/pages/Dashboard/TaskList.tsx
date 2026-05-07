@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
+import { toast } from "sonner";
 import { Loader2, Clock, CheckCircle2, AlertCircle, Trash2, RotateCcw, BarChart3, FileText } from "lucide-react";
 import AnalysisViewer from "./AnalysisViewer";
 import SubtitleViewer from "./SubtitleViewer";
@@ -99,6 +100,22 @@ export default function TaskList() {
   };
 
   const tasks = tasksQuery.data?.data || [];
+
+  // 追踪任务状态变化，完成/失败时发送通知
+  const prevStatusRef = useRef<Record<number, string>>({});
+  useEffect(() => {
+    for (const task of tasks) {
+      const prev = prevStatusRef.current[task.id];
+      if (prev && prev !== task.status) {
+        if (task.status === "completed") {
+          toast.success(`${TASK_TYPE_LABELS[task.taskType] || task.taskType} 已完成`);
+        } else if (task.status === "failed") {
+          toast.error(`${TASK_TYPE_LABELS[task.taskType] || task.taskType} 处理失败`);
+        }
+      }
+      prevStatusRef.current[task.id] = task.status;
+    }
+  }, [tasks]);
 
   return (
     <div className="space-y-6">

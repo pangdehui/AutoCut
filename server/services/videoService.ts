@@ -1,6 +1,6 @@
 import { getDb } from "../db";
-import { videos } from "../../drizzle/schema";
-import { eq, desc } from "drizzle-orm";
+import { videos, processingTasks, videoAnalysis } from "../../drizzle/schema";
+import { eq, desc, and, inArray } from "drizzle-orm";
 import type { Video } from "../../drizzle/schema";
 import fs from "node:fs";
 import path from "node:path";
@@ -121,6 +121,59 @@ export async function getVideoById(id: number, userId: number): Promise<Video | 
   if (video.userId !== userId) return null;
 
   return video;
+}
+
+export interface VideoWithStatus extends Video {
+  analysisStatus: "none" | "queued" | "processing" | "completed" | "failed";
+  analysisTaskId: number | null;
+}
+
+export async function getUserVideosWithStatus(userId: number): Promise<VideoWithStatus[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  const videoList = await db
+    .select()
+    .from(videos)
+    .where(eq(videos.userId, userId))
+    .orderBy(desc(videos.uploadedAt));
+
+  if (videoList.length === 0) return [];
+
+  const videoIds = videoList.map((v) => v.id);
+
+  // 查询每个视频最新的 analysis 任务
+  const tasks = await db
+    .select()
+    .from(processingTasks)
+    .where(
+      and(
+        inArray(processingTasks.videoId, videoIds),
+        eq(processingTasks.taskType, "analysis")
+      )
+    );
+
+  // 按视频分组，取最新任务
+  const latestTaskByVideo = new Map<number, { status: string; id: number }>();
+  for (const t of tasks) {
+    const existing = latestTaskByVideo.get(t.videoId);
+    if (!existing || t.createdAt > (existing as any)._createdAt) {
+      latestTaskByVideo.set(t.videoId, {
+        status: t.status,
+        id: t.id,
+        _createdAt: t.createdAt,
+      } as any);
+    }
+  }
+
+  return videoList.map((v) => {
+    const task = latestTaskByVideo.get(v.id);
+    return {
+      ...v,
+      analysisStatus: (task?.status as any) || "none",
+      analysisTaskId: task?.id ?? null,
+    };
+  });
 }
 
 export async function deleteVideo(id: number, userId: number): Promise<boolean> {

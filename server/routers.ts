@@ -6,7 +6,7 @@ import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import { sendRegisterCode, registerWithEmail, sendLoginCode, loginWithCode } from "./services/authService";
 import { getUserCredits, initializeCreditRates, rechargeCredits, deductCreditsAdmin, calculateRequiredCredits, deductCredits } from "./services/creditService";
-import { getUserVideos, getVideoById, deleteVideo } from "./services/videoService";
+import { getUserVideos, getUserVideosWithStatus, getVideoById, deleteVideo } from "./services/videoService";
 import { createTask, getUserTasks, getTaskById, deleteTask } from "./services/taskService";
 import { getAnalysisByTaskId } from "./services/analysisService";
 import { getSubtitlesByTaskId } from "./services/subtitleService";
@@ -220,6 +220,14 @@ export const appRouter = router({
   videos: router({
     list: protectedProcedure.query(async ({ ctx }) => {
       const videos = await getUserVideos(ctx.user.id);
+      return {
+        success: true,
+        data: videos,
+      };
+    }),
+
+    listWithStatus: protectedProcedure.query(async ({ ctx }) => {
+      const videos = await getUserVideosWithStatus(ctx.user.id);
       return {
         success: true,
         data: videos,

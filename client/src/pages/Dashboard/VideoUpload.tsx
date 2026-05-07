@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Upload, X, FileVideo, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { toast } from "sonner";
 
 const ALLOWED_TYPES = [".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".flv"];
 const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2GB
@@ -90,17 +91,23 @@ export default function VideoUpload() {
         // 上传成功后，为每个成功的视频创建分析任务
         const successfulUploads = result.data.filter((r: any) => r.success && r.videoId);
 
+        if (successfulUploads.length > 0) {
+          toast.info(`正在为 ${successfulUploads.length} 个视频创建分析任务...`);
+        }
+
         for (const upload of successfulUploads) {
           try {
-            const result = await (trpc.tasks.create as any)({
+            const taskResult = await (trpc.tasks.create as any)({
               videoId: upload.videoId,
               taskType: 'analysis',
             });
-            if (!result.success) {
-              console.error('创建分析任务失败:', result.message);
+            if (taskResult.success) {
+              toast.success(`"${upload.fileName}" 分析任务已创建`);
+            } else {
+              toast.error(`"${upload.fileName}": ${taskResult.message}`);
             }
           } catch (error: any) {
-            console.error('创建分析任务失败:', error);
+            toast.error(`"${upload.fileName}": ${error?.message || '创建分析任务失败'}`);
           }
         }
 
