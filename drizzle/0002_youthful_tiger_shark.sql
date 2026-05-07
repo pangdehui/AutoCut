@@ -1,0 +1,1 @@
+ALTER TABLE `videos` ADD `originalName` varchar(255) NOT NULL;

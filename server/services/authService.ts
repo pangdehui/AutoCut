@@ -210,6 +210,23 @@ export async function loginWithCode(
       return { success: false, message: "账户已被禁用" };
     }
 
+    // 检查并创建积分账户
+    const existingCredits = await db
+      .select()
+      .from(userCredits)
+      .where(eq(userCredits.userId, userRecord.id))
+      .limit(1);
+
+    if (existingCredits.length === 0) {
+      // 创建积分账户（初始赠送 1000 积分）
+      await db.insert(userCredits).values({
+        userId: userRecord.id,
+        balance: 1000,
+        totalEarned: 1000,
+        totalUsed: 0,
+      });
+    }
+
     // 更新最后登录时间
     await db
       .update(users)

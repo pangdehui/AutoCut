@@ -77,6 +77,7 @@ export async function saveVideo(
     .insert(videos)
     .values({
       userId,
+      originalName,
       fileName: safeName,
       filePath,
       fileSize,
@@ -120,4 +121,24 @@ export async function getVideoById(id: number, userId: number): Promise<Video | 
   if (video.userId !== userId) return null;
 
   return video;
+}
+
+export async function deleteVideo(id: number, userId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+
+  const video = await getVideoById(id, userId);
+  if (!video) return false;
+
+  // 删除文件
+  if (fs.existsSync(video.filePath)) {
+    fs.unlinkSync(video.filePath);
+  }
+
+  // 删除数据库记录
+  await db
+    .delete(videos)
+    .where(eq(videos.id, id));
+
+  return true;
 }

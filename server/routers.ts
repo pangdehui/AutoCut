@@ -5,8 +5,8 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import { sendRegisterCode, registerWithEmail, sendLoginCode, loginWithCode } from "./services/authService";
-import { getUserCredits, initializeCreditRates, rechargeCredits, deductCreditsAdmin } from "./services/creditService";
-import { getUserVideos, getVideoById } from "./services/videoService";
+import { getUserCredits, initializeCreditRates, rechargeCredits, deductCreditsAdmin, calculateRequiredCredits, deductCredits } from "./services/creditService";
+import { getUserVideos, getVideoById, deleteVideo } from "./services/videoService";
 import { createTask, getUserTasks, getTaskById, deleteTask } from "./services/taskService";
 import { getAnalysisByTaskId } from "./services/analysisService";
 import { getSubtitlesByTaskId } from "./services/subtitleService";
@@ -172,6 +172,22 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
+        // 检查视频是否存在且属于用户
+        const video = await getVideoById(input.videoId, ctx.user.id);
+        if (!video) {
+          return { success: false, message: "视频不存在" };
+        }
+
+        // 计算所需积分（暂时使用固定值，实际应根据视频时长计算）
+        const requiredCredits = input.taskType === "analysis" ? 10 : input.taskType === "editing" ? 15 : 8;
+
+        // 检查用户积分
+        const userCredits = await getUserCredits(ctx.user.id);
+        if (!userCredits || userCredits.balance < requiredCredits) {
+          return { success: false, message: "积分不足，请先充值" };
+        }
+
+        // 创建任务
         const task = await createTask({
           userId: ctx.user.id,
           videoId: input.videoId,
@@ -179,6 +195,16 @@ export const appRouter = router({
           parameters: input.parameters,
         });
         if (!task) return { success: false, message: "创建任务失败" };
+
+        // 扣除积分
+        const creditType: "analysis" | "editing" | "subtitle" = input.taskType === "combined" ? "analysis" : input.taskType;
+        const deductResult = await deductCredits(ctx.user.id, requiredCredits, creditType, task.id);
+        if (!deductResult.success) {
+          // 如果扣积分失败，删除任务
+          await deleteTask(task.id, ctx.user.id);
+          return { success: false, message: deductResult.message };
+        }
+
         return { success: true, data: task };
       }),
 
@@ -208,6 +234,14 @@ export const appRouter = router({
           return { success: false, message: "视频不存在" };
         }
         return { success: true, data: video };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const ok = await deleteVideo(input.id, ctx.user.id);
+        if (!ok) return { success: false, message: "删除失败（视频不存在）" };
+        return { success: true };
       }),
   }),
 

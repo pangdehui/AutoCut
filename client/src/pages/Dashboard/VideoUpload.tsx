@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Upload, X, FileVideo, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
+import { trpc } from "@/lib/trpc";
 
 const ALLOWED_TYPES = [".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".flv"];
 const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2GB
@@ -86,6 +87,23 @@ export default function VideoUpload() {
       const result = await resp.json();
 
       if (result.success && result.data) {
+        // 上传成功后，为每个成功的视频创建分析任务
+        const successfulUploads = result.data.filter((r: any) => r.success && r.videoId);
+
+        for (const upload of successfulUploads) {
+          try {
+            const result = await (trpc.tasks.create as any)({
+              videoId: upload.videoId,
+              taskType: 'analysis',
+            });
+            if (!result.success) {
+              console.error('创建分析任务失败:', result.message);
+            }
+          } catch (error: any) {
+            console.error('创建分析任务失败:', error);
+          }
+        }
+
         setFiles((prev) =>
           prev.map((item) => {
             if (item.status !== "pending") return item;

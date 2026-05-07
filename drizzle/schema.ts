@@ -69,6 +69,7 @@ export type InsertCreditTransaction = typeof creditTransactions.$inferInsert;
 export const videos = mysqlTable("videos", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
+  originalName: varchar("originalName", { length: 255 }).notNull(), // 原始文件名
   fileName: varchar("fileName", { length: 255 }).notNull(),
   filePath: text("filePath").notNull(), // 本地存储路径
   fileSize: bigint("fileSize", { mode: "number" }).notNull(), // 字节数

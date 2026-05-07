@@ -7,7 +7,8 @@ import VideoUpload from "./VideoUpload";
 import TaskList from "./TaskList";
 import EditingPanel from "./EditingPanel";
 import SubtitlePanel from "./SubtitlePanel";
-import { Loader2, Upload, Zap, Settings, Scissors, Subtitles } from "lucide-react";
+import VideoList from "./VideoList";
+import { Loader2, Upload, Zap, Settings, Scissors, Subtitles, ListVideo } from "lucide-react";
 
 export default function Dashboard() {
   const { user, loading } = useAuth();
@@ -106,6 +107,10 @@ export default function Dashboard() {
               <Upload className="h-4 w-4" />
               上传视频
             </TabsTrigger>
+            <TabsTrigger value="videos" className="flex items-center gap-2">
+              <ListVideo className="h-4 w-4" />
+              我的视频
+            </TabsTrigger>
             <TabsTrigger value="edit" className="flex items-center gap-2">
               <Scissors className="h-4 w-4" />
               视频剪辑
@@ -128,6 +133,11 @@ export default function Dashboard() {
           {/* 上传标签页 */}
           <TabsContent value="upload">
             <VideoUpload />
+          </TabsContent>
+
+          {/* 视频列表标签页 */}
+          <TabsContent value="videos">
+            <VideoList />
           </TabsContent>
 
           {/* 视频剪辑标签页 */}
