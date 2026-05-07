@@ -11,7 +11,8 @@ import VideoList from "./VideoList";
 import ProjectList from "./ProjectList";
 import ProjectView from "./ProjectView";
 import TtsPanel from "./TtsPanel";
-import { Loader2, Upload, Zap, Settings, Scissors, Subtitles, Folders, Volume2 } from "lucide-react";
+import OutputList from "./OutputList";
+import { Loader2, Upload, Zap, Settings, Scissors, Subtitles, Folders, Volume2, Package } from "lucide-react";
 
 export default function Dashboard() {
   const { user, loading } = useAuth();
@@ -128,6 +129,10 @@ export default function Dashboard() {
               <Volume2 className="h-4 w-4" />
               AI 配音
             </TabsTrigger>
+            <TabsTrigger value="outputs" className="flex items-center gap-2">
+              <Package className="h-4 w-4" />
+              生成结果
+            </TabsTrigger>
             <TabsTrigger value="tasks" className="flex items-center gap-2">
               任务列表
             </TabsTrigger>
@@ -169,6 +174,11 @@ export default function Dashboard() {
           {/* AI 配音标签页 */}
           <TabsContent value="tts">
             <TtsPanel />
+          </TabsContent>
+
+          {/* 生成结果标签页 */}
+          <TabsContent value="outputs">
+            <OutputList />
           </TabsContent>
 
           {/* 任务列表标签页 */}
