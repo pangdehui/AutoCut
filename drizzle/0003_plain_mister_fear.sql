@@ -1,1 +1,0 @@
-ALTER TABLE `processingTasks` MODIFY COLUMN `taskType` enum('analysis','editing','subtitle','combined','ai_edit') NOT NULL;
