@@ -5,14 +5,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import TaskList from "./TaskList";
-import EditingPanel from "./EditingPanel";
 import SubtitlePanel from "./SubtitlePanel";
-import VideoList from "./VideoList";
 import ProjectList from "./ProjectList";
 import ProjectView from "./ProjectView";
 import TtsPanel from "./TtsPanel";
 import OutputList from "./OutputList";
-import { Loader2, Upload, Zap, Settings, Scissors, Subtitles, Folders, Volume2, Package } from "lucide-react";
+import { Loader2, Zap, Settings, Subtitles, Folders, Volume2, Package } from "lucide-react";
 
 export default function Dashboard() {
   const { user, loading } = useAuth();
@@ -113,14 +111,6 @@ export default function Dashboard() {
               <Folders className="h-4 w-4" />
               我的项目
             </TabsTrigger>
-            <TabsTrigger value="upload" className="flex items-center gap-2">
-              <Upload className="h-4 w-4" />
-              上传视频
-            </TabsTrigger>
-            <TabsTrigger value="edit" className="flex items-center gap-2">
-              <Scissors className="h-4 w-4" />
-              视频剪辑
-            </TabsTrigger>
             <TabsTrigger value="subtitle" className="flex items-center gap-2">
               <Subtitles className="h-4 w-4" />
               字幕生成
@@ -154,16 +144,6 @@ export default function Dashboard() {
             ) : (
               <ProjectList onSelectProject={setSelectedProjectId} />
             )}
-          </TabsContent>
-
-          {/* 上传标签页 */}
-          <TabsContent value="upload">
-            <VideoList />
-          </TabsContent>
-
-          {/* 视频剪辑标签页 */}
-          <TabsContent value="edit">
-            <EditingPanel />
           </TabsContent>
 
           {/* 字幕生成标签页 */}
