@@ -129,7 +129,7 @@ export default function VideoList() {
           const status: AnalysisStatus = video.analysisStatus || "none";
           const statusCfg = STATUS_CONFIG[status];
           const hasAnalysis = status === "completed" && video.analysisSummary;
-          const isExpanded = expandedTaskId === video.analysisTaskId;
+          const isExpanded = video.analysisTaskId && expandedTaskId === video.analysisTaskId;
           const isEditing = editingVideoId === video.id;
 
           return (
@@ -290,9 +290,9 @@ export default function VideoList() {
               </CardContent>
 
               {/* 展开的完整 AnalysisViewer */}
-              {isExpanded && (
+              {isExpanded && video.analysisTaskId && (
                 <div className="px-6 pb-4">
-                  <AnalysisViewer taskId={video.analysisTaskId!} />
+                  <AnalysisViewer taskId={video.analysisTaskId} />
                 </div>
               )}
             </Card>

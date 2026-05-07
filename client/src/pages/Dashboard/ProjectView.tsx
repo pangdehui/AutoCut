@@ -274,7 +274,7 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
               const status: AnalysisStatus = video.analysisStatus || "none";
               const statusCfg = STATUS_CONFIG[status];
               const hasAnalysis = status === "completed" && video.analysisSummary;
-              const isExpanded = expandedTaskId === video.analysisTaskId;
+              const isExpanded = video.analysisTaskId && expandedTaskId === video.analysisTaskId;
               const isSelected = selectedVideoIds.has(video.id);
               const canSelect = status === "completed";
 
@@ -373,9 +373,9 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
                     </div>
                   </CardContent>
 
-                  {isExpanded && (
+                  {isExpanded && video.analysisTaskId && (
                     <div className="px-6 pb-4">
-                      <AnalysisViewer taskId={video.analysisTaskId!} />
+                      <AnalysisViewer taskId={video.analysisTaskId} />
                     </div>
                   )}
                 </Card>
