@@ -145,8 +145,18 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
         for (const r of result.data) {
           if (r.success) {
             try {
-              await (trpc.tasks.create as any)({ videoId: r.videoId, taskType: 'analysis' });
-            } catch {}
+              const taskResult = await createTaskMutation.mutateAsync({
+                videoId: r.videoId,
+                taskType: 'analysis',
+              });
+              if (taskResult.success) {
+                toast.success(`"${r.fileName}" 分析任务已创建`);
+              } else {
+                toast.error(`"${r.fileName}": ${taskResult.message}`);
+              }
+            } catch (error: any) {
+              toast.error(`"${r.fileName}": ${error?.message || '创建分析任务失败'}`);
+            }
           }
         }
         videosQuery.refetch();
