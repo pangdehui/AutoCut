@@ -11,9 +11,12 @@ import { serveStatic, setupVite } from "./vite";
 import multer from "multer";
 import { sdk } from "./sdk";
 import { validateVideoFile, saveVideo } from "../services/videoService";
+import { videos } from "../../drizzle/schema";
+import { eq } from "drizzle-orm";
 import "../services/analysisService";
 import "../services/editingService";
 import "../services/subtitleService";
+import "../services/aiEditService";
 import path from "node:path";
 import fs from "node:fs";
 
@@ -106,6 +109,68 @@ async function startServer() {
     } catch (error) {
       console.error("[Upload] Error:", error);
       res.status(500).json({ success: false, message: "上传失败" });
+    }
+  });
+
+  // 确保缩略图目录存在
+  const thumbDir = path.resolve("uploads/thumbnails");
+  if (!fs.existsSync(thumbDir)) {
+    fs.mkdirSync(thumbDir, { recursive: true });
+  }
+
+  // 视频封面缩略图接口
+  app.get("/api/videos/thumbnail/:id", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (!user) {
+        return res.status(401).json({ success: false, message: "请先登录" });
+      }
+
+      const videoId = parseInt(req.params.id);
+      if (isNaN(videoId)) {
+        return res.status(400).json({ success: false, message: "无效的视频 ID" });
+      }
+
+      const thumbPath = path.join(thumbDir, `${videoId}.jpg`);
+      if (fs.existsSync(thumbPath)) {
+        return res.sendFile(thumbPath);
+      }
+
+      // 查找视频
+      const { getDb } = await import("../db");
+      const db = await getDb();
+      if (!db) {
+        return res.status(500).json({ success: false, message: "数据库不可用" });
+      }
+
+      const result = await db
+        .select({ filePath: videos.filePath })
+        .from(videos)
+        .where(eq(videos.id, videoId))
+        .limit(1);
+
+      if (result.length === 0) {
+        return res.status(404).json({ success: false, message: "视频不存在" });
+      }
+
+      const videoPath = result[0].filePath;
+      if (!fs.existsSync(videoPath)) {
+        return res.status(404).json({ success: false, message: "视频文件不存在" });
+      }
+
+      // 提取第一帧作为封面
+      const { exec } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      await promisify(exec)(`ffmpeg -i "${videoPath}" -vframes 1 -q:v 3 "${thumbPath}" -y`);
+
+      if (fs.existsSync(thumbPath)) {
+        res.sendFile(thumbPath);
+      } else {
+        res.status(500).json({ success: false, message: "封面生成失败" });
+      }
+    } catch (error) {
+      console.error("[Thumbnail] Error:", error);
+      res.status(500).json({ success: false, message: "封面获取失败" });
     }
   });
 

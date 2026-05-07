@@ -29,14 +29,14 @@ async function getVideoPath(videoId: number): Promise<string | null> {
   return result.length > 0 ? result[0].filePath : null;
 }
 
-function outputPath(taskId: number, suffix = "output"): string {
+export function outputPath(taskId: number, suffix = "output"): string {
   ensureOutputDir();
   return path.join(OUTPUT_DIR, `edit_${taskId}_${suffix}.mp4`);
 }
 
 // ====== 核心剪辑操作 ======
 
-async function trimVideo(
+export async function trimVideo(
   inputPath: string,
   outputPath: string,
   startTime: string,
@@ -47,7 +47,7 @@ async function trimVideo(
   );
 }
 
-async function sliceAndMerge(
+export async function sliceAndMerge(
   inputPath: string,
   outputPath: string,
   segments: { start: string; end: string }[]
@@ -108,7 +108,7 @@ async function addWatermark(
   );
 }
 
-async function changeSpeed(
+export async function changeSpeed(
   inputPath: string,
   outputPath: string,
   speed: number

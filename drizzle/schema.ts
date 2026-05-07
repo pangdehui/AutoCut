@@ -87,7 +87,7 @@ export const processingTasks = mysqlTable("processingTasks", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
   videoId: int("videoId").notNull(),
-  taskType: mysqlEnum("taskType", ["analysis", "editing", "subtitle", "combined"]).notNull(),
+  taskType: mysqlEnum("taskType", ["analysis", "editing", "subtitle", "combined", "ai_edit"]).notNull(),
   status: mysqlEnum("status", ["queued", "processing", "completed", "failed"]).default("queued").notNull(),
   progress: int("progress").default(0), // 0-100
   creditsUsed: bigint("creditsUsed", { mode: "number" }).default(0),

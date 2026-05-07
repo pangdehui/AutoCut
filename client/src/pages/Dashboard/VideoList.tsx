@@ -2,12 +2,13 @@ import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import {
   Loader2, Play, Trash2, FileVideo, Calendar, HardDrive,
-  CheckCircle2, AlertCircle, Clock, ChevronDown, ChevronUp, Tag,
+  CheckCircle2, AlertCircle, Clock, ChevronDown, ChevronUp, Tag, Wand2, Send,
 } from "lucide-react";
 import AnalysisViewer from "./AnalysisViewer";
 
@@ -34,6 +35,8 @@ const STATUS_CONFIG: Record<AnalysisStatus, { label: string; className: string; 
 
 export default function VideoList() {
   const [expandedTaskId, setExpandedTaskId] = useState<number | null>(null);
+  const [aiPrompt, setAiPrompt] = useState<Record<number, string>>({});
+  const [editingVideoId, setEditingVideoId] = useState<number | null>(null);
   const videosQuery = trpc.videos.listWithStatus.useQuery(undefined, { refetchInterval: 5000 });
   const deleteVideoMutation = trpc.videos.delete?.useMutation();
   const createTaskMutation = trpc.tasks.create.useMutation();
@@ -62,6 +65,34 @@ export default function VideoList() {
       }
     } catch (error: any) {
       toast.error(error?.message || '创建分析任务失败');
+    }
+  };
+
+  const handleAiEdit = async (videoId: number) => {
+    const prompt = aiPrompt[videoId]?.trim();
+    if (!prompt) {
+      toast.error('请输入剪辑指令');
+      return;
+    }
+
+    setEditingVideoId(videoId);
+    try {
+      const result = await createTaskMutation.mutateAsync({
+        videoId,
+        taskType: 'ai_edit',
+        parameters: { prompt },
+      });
+      if (result.success) {
+        toast.success('AI 剪辑任务已创建，请稍候');
+        setAiPrompt(prev => ({ ...prev, [videoId]: '' }));
+        utils.tasks.list.invalidate();
+      } else {
+        toast.error(result.message || '创建剪辑任务失败');
+      }
+    } catch (error: any) {
+      toast.error(error?.message || '创建剪辑任务失败');
+    } finally {
+      setEditingVideoId(null);
     }
   };
 
@@ -99,17 +130,31 @@ export default function VideoList() {
           const statusCfg = STATUS_CONFIG[status];
           const hasAnalysis = status === "completed" && video.analysisSummary;
           const isExpanded = expandedTaskId === video.analysisTaskId;
+          const isEditing = editingVideoId === video.id;
 
           return (
-            <Card key={video.id} className="hover:shadow-md transition-shadow flex flex-col">
+            <Card key={video.id} className="hover:shadow-md transition-shadow flex flex-col overflow-hidden">
+              {/* 视频封面 */}
+              <div className="relative aspect-video bg-muted overflow-hidden">
+                <img
+                  src={`/api/videos/thumbnail/${video.id}`}
+                  alt={video.originalName}
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                    (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                  }}
+                />
+                <div className="hidden absolute inset-0 flex items-center justify-center bg-muted">
+                  <FileVideo className="h-12 w-12 text-muted-foreground" />
+                </div>
+              </div>
+
               {/* 头部：文件名 + 基本信息 */}
               <CardHeader className="pb-2">
-                <div className="flex items-start justify-between">
-                  <CardTitle className="text-base flex items-center gap-2 truncate">
-                    <FileVideo className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{video.originalName}</span>
-                  </CardTitle>
-                </div>
+                <CardTitle className="text-base flex items-center gap-2 truncate">
+                  <span className="truncate">{video.originalName}</span>
+                </CardTitle>
                 <CardDescription>
                   <div className="flex items-center gap-3 text-xs mt-1">
                     <span className="flex items-center gap-1">
@@ -178,6 +223,39 @@ export default function VideoList() {
                         <><ChevronDown className="h-3 w-3" />场景 & 精彩片段</>
                       )}
                     </button>
+                  </div>
+                </CardContent>
+              )}
+
+              {/* AI 剪辑输入框（已完成分析时显示）*/}
+              {hasAnalysis && (
+                <CardContent className="pt-0 pb-2">
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="告诉 AI 你想怎么剪..."
+                      value={aiPrompt[video.id] || ''}
+                      onChange={(e) => setAiPrompt(prev => ({ ...prev, [video.id]: e.target.value }))}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleAiEdit(video.id);
+                      }}
+                      className="h-8 text-xs"
+                    />
+                    <Button
+                      size="sm"
+                      variant="default"
+                      className="h-8 shrink-0"
+                      disabled={isEditing || !aiPrompt[video.id]?.trim()}
+                      onClick={() => handleAiEdit(video.id)}
+                    >
+                      {isEditing ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <>
+                          <Wand2 className="h-3.5 w-3.5 mr-1" />
+                          AI 剪辑
+                        </>
+                      )}
+                    </Button>
                   </div>
                 </CardContent>
               )}
