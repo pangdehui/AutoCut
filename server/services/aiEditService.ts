@@ -124,6 +124,7 @@ ${userPrompt}
   "operation": "trim" | "slice" | "speed",
   "explanation": "向用户解释你将如何剪辑（中文）",
   "params": {
+    "mute": false,
     "trim": { "videoIndex": 1, "startTime": "00:00:30", "endTime": "00:02:15" },
     "slices": [
       { "videoIndex": 1, "start": "00:00:10", "end": "00:00:30" },
@@ -131,7 +132,9 @@ ${userPrompt}
     ],
     "speed": 1.5
   }
-}`;
+}
+
+注意：如果用户要求静音/去声音/不要音频，设置 "mute": true。`;
 }
 
 interface EditSlice {
@@ -263,6 +266,17 @@ async function runAiEdit(
     }
   } catch (error) {
     throw new Error(`剪辑执行失败: ${String(error)}`);
+  }
+
+  // 处理静音：移除音频轨道
+  if (editParams.mute) {
+    await updateProgress(85);
+    const mutedOutput = outputPath(task.id, `${editPlan.operation}_muted`);
+    await execAsync(
+      `ffmpeg -i "${output}" -c:v copy -an "${mutedOutput}" -y`
+    );
+    fs.unlinkSync(output);
+    fs.renameSync(mutedOutput, output);
   }
 
   await updateProgress(90);
