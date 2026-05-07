@@ -94,7 +94,7 @@ export async function sliceAndMerge(
   if (fs.existsSync(concatList)) fs.unlinkSync(concatList);
 }
 
-async function resizeVideo(
+export async function resizeVideo(
   inputPath: string,
   outputPath: string,
   resolution: string
@@ -105,7 +105,7 @@ async function resizeVideo(
   );
 }
 
-async function addWatermark(
+export async function addWatermark(
   inputPath: string,
   outputPath: string,
   text: string,
@@ -139,6 +139,40 @@ export async function changeSpeed(
 
   await execAsync(
     `ffmpeg -i "${inputPath}" -filter_complex "[0:v]${setPts}[v];[0:a]${atempo}[a]" -map "[v]" -map "[a]" "${outputPath}" -y`
+  );
+}
+
+export async function reverseVideo(
+  inputPath: string,
+  outputPath: string
+): Promise<void> {
+  await execAsync(
+    `ffmpeg -i "${inputPath}" -vf reverse -af areverse -c:v libx264 -preset medium -crf 23 -c:a aac "${outputPath}" -y`
+  );
+}
+
+export async function concatVideos(
+  inputPaths: string[],
+  outputPath: string
+): Promise<void> {
+  const concatList = path.resolve(OUTPUT_DIR, `concat_${Date.now()}.txt`);
+  for (const p of inputPaths) {
+    fs.appendFileSync(concatList, `file '${p.replace(/\\/g, "/")}'\n`);
+  }
+  await execAsync(
+    `ffmpeg -f concat -safe 0 -i "${concatList}" -c:v libx264 -preset medium -crf 23 -c:a aac "${outputPath}" -y`
+  );
+  if (fs.existsSync(concatList)) fs.unlinkSync(concatList);
+}
+
+export async function adjustVolume(
+  inputPath: string,
+  outputPath: string,
+  volume: number
+): Promise<void> {
+  // volume: 0.0 = 静音, 1.0 = 原音量, 2.0 = 两倍
+  await execAsync(
+    `ffmpeg -i "${inputPath}" -filter:a "volume=${volume}" -c:v copy "${outputPath}" -y`
   );
 }
 

@@ -5,7 +5,7 @@ import type { ProcessingTask } from "../../drizzle/schema";
 import { registerTaskHandler } from "./taskService";
 import { openai } from "../_core/openai";
 import { ENV } from "../_core/env";
-import { trimVideo, sliceAndMerge, changeSpeed, outputPath } from "./editingService";
+import { trimVideo, sliceAndMerge, changeSpeed, reverseVideo, concatVideos, adjustVolume, resizeVideo, addWatermark, outputPath } from "./editingService";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
@@ -121,7 +121,7 @@ ${userPrompt}
 只返回 JSON，不要其他文字：
 
 {
-  "operation": "trim" | "slice" | "speed",
+  "operation": "trim" | "slice" | "concat" | "speed" | "reverse" | "resize" | "watermark" | "volume",
   "explanation": "向用户解释你将如何剪辑（中文）",
   "params": {
     "mute": false,
@@ -130,9 +130,24 @@ ${userPrompt}
       { "videoIndex": 1, "start": "00:00:10", "end": "00:00:30" },
       { "videoIndex": 2, "start": "00:00:15", "end": "00:00:45" }
     ],
-    "speed": 1.5
+    "concat": { "videoOrder": [1, 2] },
+    "speed": 1.5,
+    "reverse": { "videoIndex": 1 },
+    "resize": { "videoIndex": 1, "resolution": "1280:720" },
+    "watermark": { "videoIndex": 1, "text": "文字内容", "position": "bottom-right" },
+    "volume": { "videoIndex": 1, "level": 0.5 }
   }
 }
+
+操作说明：
+- trim: 裁剪指定时间段
+- slice: 从视频中提取多个片段并合并（可跨视频）
+- concat: 将多个视频完整拼接在一起（按 videoOrder 顺序）
+- speed: 加速/减速（0.5=半速, 1.0=原速, 2.0=两倍速）
+- reverse: 倒放视频
+- resize: 调整分辨率（1920:1080/1280:720/640:360）
+- watermark: 添加文字水印（position: top-left/top-right/bottom-left/bottom-right/center）
+- volume: 调整音量（0.0=静音, 0.5=一半, 1.0=原音量, 2.0=两倍）
 
 注意：如果用户要求静音/去声音/不要音频，设置 "mute": true。`;
 }
@@ -144,7 +159,7 @@ interface EditSlice {
 }
 
 interface EditPlan {
-  operation: "trim" | "slice" | "speed";
+  operation: "trim" | "slice" | "concat" | "speed" | "reverse" | "resize" | "watermark" | "volume";
   explanation: string;
   params: Record<string, unknown>;
 }
@@ -259,6 +274,52 @@ async function runAiEdit(
         if (!sp || sp <= 0) throw new Error("缺少有效速度参数");
         if (!srcPath) throw new Error("源视频不存在");
         await changeSpeed(srcPath, output, sp);
+        break;
+      }
+      case "concat": {
+        const order = (editParams.concat as { videoOrder: number[] })?.videoOrder || Array.from({ length: idList.length }, (_, i) => i + 1);
+        const paths: string[] = [];
+        for (const idx of order) {
+          const videoId = idList[Math.min(idx - 1, idList.length - 1)];
+          const p = videoPathMap.get(videoId);
+          if (!p) throw new Error(`视频 ${idx} 不存在`);
+          paths.push(p);
+        }
+        await concatVideos(paths, output);
+        break;
+      }
+      case "reverse": {
+        const revIdx = (editParams.reverse as { videoIndex?: number })?.videoIndex || 1;
+        const srcPath = videoPathMap.get(idList[Math.min(revIdx - 1, idList.length - 1)]);
+        if (!srcPath) throw new Error("源视频不存在");
+        await reverseVideo(srcPath, output);
+        break;
+      }
+      case "resize": {
+        const rz = editParams.resize as { videoIndex?: number; resolution: string };
+        if (!rz?.resolution) throw new Error("缺少分辨率参数");
+        const rzIdx = rz.videoIndex || 1;
+        const srcPath = videoPathMap.get(idList[Math.min(rzIdx - 1, idList.length - 1)]);
+        if (!srcPath) throw new Error("源视频不存在");
+        await resizeVideo(srcPath, output, rz.resolution);
+        break;
+      }
+      case "watermark": {
+        const wm = editParams.watermark as { videoIndex?: number; text: string; position: string };
+        if (!wm?.text) throw new Error("缺少水印文字");
+        const wmIdx = wm.videoIndex || 1;
+        const srcPath = videoPathMap.get(idList[Math.min(wmIdx - 1, idList.length - 1)]);
+        if (!srcPath) throw new Error("源视频不存在");
+        await addWatermark(srcPath, output, wm.text, wm.position || "bottom-right");
+        break;
+      }
+      case "volume": {
+        const vol = editParams.volume as { videoIndex?: number; level: number };
+        if (vol?.level === undefined || vol.level < 0) throw new Error("缺少有效音量参数");
+        const volIdx = vol.videoIndex || 1;
+        const srcPath = videoPathMap.get(idList[Math.min(volIdx - 1, idList.length - 1)]);
+        if (!srcPath) throw new Error("源视频不存在");
+        await adjustVolume(srcPath, output, vol.level);
         break;
       }
       default:
