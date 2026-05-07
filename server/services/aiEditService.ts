@@ -14,6 +14,24 @@ import path from "node:path";
 const execAsync = promisify(exec);
 const OUTPUT_DIR = path.resolve("uploads/output");
 
+function timeToSeconds(t: string): number {
+  const parts = t.split(":").map(Number);
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return 0;
+}
+
+function secondsToTime(s: number): string {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+function durationBetween(start: string, end: string): string {
+  return secondsToTime(timeToSeconds(end) - timeToSeconds(start));
+}
+
 async function getVideoPaths(ids: number[]): Promise<Map<number, string>> {
   const db = await getDb();
   if (!db) return new Map();
@@ -280,15 +298,17 @@ async function multiSourceSliceAndMerge(
     if (!srcPath) throw new Error(`切片 ${i + 1} 的源视频不存在`);
 
     const segPath = path.join(OUTPUT_DIR, `seg_${Date.now()}_${i}.mp4`);
+    const dur = durationBetween(s.start, s.end);
     await execAsync(
-      `ffmpeg -i "${srcPath}" -ss ${s.start} -to ${s.end} -c copy "${segPath}" -y`
+      `ffmpeg -ss ${s.start} -i "${srcPath}" -to ${dur} -c copy -avoid_negative_ts make_zero "${segPath}" -y`
     );
     fs.appendFileSync(concatList, `file '${segPath.replace(/\\/g, "/")}'\n`);
     tempFiles.push(segPath);
   }
 
+  // 多源视频用重新编码确保兼容性
   await execAsync(
-    `ffmpeg -f concat -safe 0 -i "${concatList}" -c copy "${outputPath}" -y`
+    `ffmpeg -f concat -safe 0 -i "${concatList}" -c:v libx264 -preset medium -crf 23 -c:a aac "${outputPath}" -y`
   );
 
   // 清理临时文件

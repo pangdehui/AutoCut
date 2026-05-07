@@ -18,6 +18,24 @@ function ensureOutputDir() {
   }
 }
 
+function timeToSeconds(t: string): number {
+  const parts = t.split(":").map(Number);
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return 0;
+}
+
+function secondsToTime(s: number): string {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+function durationBetween(start: string, end: string): string {
+  return secondsToTime(timeToSeconds(end) - timeToSeconds(start));
+}
+
 async function getVideoPath(videoId: number): Promise<string | null> {
   const db = await getDb();
   if (!db) return null;
@@ -42,8 +60,9 @@ export async function trimVideo(
   startTime: string,
   endTime: string
 ): Promise<void> {
+  const duration = durationBetween(startTime, endTime);
   await execAsync(
-    `ffmpeg -i "${inputPath}" -ss ${startTime} -to ${endTime} -c copy "${outputPath}" -y`
+    `ffmpeg -ss ${startTime} -i "${inputPath}" -to ${duration} -c copy -avoid_negative_ts make_zero "${outputPath}" -y`
   );
 }
 
@@ -56,8 +75,9 @@ export async function sliceAndMerge(
 
   for (let i = 0; i < segments.length; i++) {
     const segPath = path.resolve(OUTPUT_DIR, `seg_${Date.now()}_${i}.mp4`);
+    const dur = durationBetween(segments[i].start, segments[i].end);
     await execAsync(
-      `ffmpeg -i "${inputPath}" -ss ${segments[i].start} -to ${segments[i].end} -c copy "${segPath}" -y`
+      `ffmpeg -ss ${segments[i].start} -i "${inputPath}" -to ${dur} -c copy -avoid_negative_ts make_zero "${segPath}" -y`
     );
     fs.appendFileSync(concatList, `file '${segPath.replace(/\\/g, "/")}'\n`);
   }
