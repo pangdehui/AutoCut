@@ -62,7 +62,8 @@ export async function trimVideo(
 ): Promise<void> {
   const duration = durationBetween(startTime, endTime);
   await execAsync(
-    `ffmpeg -ss ${startTime} -i "${inputPath}" -to ${duration} -c copy -avoid_negative_ts make_zero "${outputPath}" -y`
+    `ffmpeg -ss ${startTime} -i "${inputPath}" -to ${duration} -c copy -avoid_negative_ts make_zero "${outputPath}" -y`,
+    { timeout: 120000 } // 2分钟超时
   );
 }
 

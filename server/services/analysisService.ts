@@ -78,55 +78,60 @@ function videoToBase64(filePath: string): string {
 
 // ====== AI 分析 ======
 
-const ANALYSIS_PROMPT = `你是一个专业的视频内容分析专家。请仔细观看这个视频，分析其中的内容。
+const ANALYSIS_PROMPT = `你是专业视频分析员。完整观看后输出 JSON。你需要给剪辑师提供精确到每一秒的素材信息。
 
-请以 JSON 格式返回分析结果（只返回 JSON，不要其他文字）：
-
+返回格式：
 {
   "scenes": [
     {
-      "timestamp": "MM:SS 格式的估计时间",
-      "description": "场景的详细描述（中文，50字以内）",
+      "startTime": 0,
+      "endTime": 5,
+      "description": "画面内容描述（包含：人物/物体/动作/构图/光线/色彩），30字内",
+      "shotType": "特写/近景/中景/远景/空镜",
+      "motion": "静止/微动/运动/剧烈运动",
+      "quality": "清晰/一般/模糊/晃动",
+      "audioGuess": "似乎有人说话/纯环境音/安静无声",
       "tags": ["标签1", "标签2"]
     }
   ],
-  "keywords": ["关键词1", "关键词2", ...最多10个，描述视频整体内容],
   "highlights": [
     {
-      "timestamp": "MM:SS 格式",
-      "description": "为什么这段是精彩片段",
-      "score": 1-10 的精彩程度评分
+      "startTime": 3,
+      "endTime": 6,
+      "description": "冲突瞬间/动作爆发/情绪高点/精彩画面",
+      "score": 8
     }
   ],
-  "summary": "视频整体内容的简短总结（中文，100字以内）",
-  "category": "视频分类（如：教程、娱乐、记录、商业等）"
+  "keywords": ["关键词", 最多8个],
+  "summary": "整体总结，含主要画面类型和情绪基调，50字",
+  "category": "口播/带货/短剧/解说/Vlog/美食/教程/混剪/其他",
+  "hasClearAudio": true
 }`;
 
 const SEGMENT_PROMPT = (segmentIndex: number, totalSegments: number) =>
-  `你是一个专业的视频内容分析专家。这是视频的第 ${segmentIndex}/${totalSegments} 段（共 ${totalSegments} 段）。请仔细观看这段视频片段，分析其中的内容。
+  `你是专业视频分析员。这是视频第 ${segmentIndex}/${totalSegments} 段。输出 JSON（时间相对于本段开头）。
 
-请以 JSON 格式返回分析结果（只返回 JSON，不要其他文字）：
-
+返回格式：
 {
   "scenes": [
     {
-      "timestamp": "MM:SS 格式（相对于本段开头的时间）",
-      "description": "场景的详细描述（中文，50字以内）",
-      "tags": ["标签1", "标签2"]
+      "startTime": 0,
+      "endTime": 5,
+      "description": "画面内容描述（人物/物体/动作/构图/光线），30字内",
+      "shotType": "特写/近景/中景/远景/空镜",
+      "motion": "静止/微动/运动/剧烈运动",
+      "quality": "清晰/一般/模糊/晃动",
+      "audioGuess": "似乎有人说话/纯环境音/安静无声",
+      "tags": ["标签"]
     }
   ],
-  "keywords": ["关键词1", "关键词2", ...最多5个，描述本段内容],
   "highlights": [
-    {
-      "timestamp": "MM:SS 格式（相对于本段开头）",
-      "description": "为什么这段是精彩片段",
-      "score": 1-10 的精彩程度评分
-    }
+    { "startTime": 0, "endTime": 3, "description": "精彩片段说明", "score": 8 }
   ],
-  "summary": "本段内容的简短总结（中文，50字以内）",
-  "category": "视频分类（如：教程、娱乐、记录、商业等）"
+  "keywords": ["关键词", 最多5个],
+  "summary": "本段总结，30字",
+  "category": "口播/带货/短剧/解说/Vlog/美食/教程/混剪/其他"
 }`;
-
 async function analyzeVideo(
   videoPath: string,
   isSegment: boolean,
@@ -176,6 +181,12 @@ function formatTimestamp(seconds: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+function toSeconds(val: unknown): number {
+  if (typeof val === "number") return val;
+  if (typeof val === "string") return parseTimestamp(val);
+  return 0;
+}
+
 function mergeSegmentResults(
   results: Record<string, unknown>[],
 ): Record<string, unknown> {
@@ -190,21 +201,32 @@ function mergeSegmentResults(
     const r = results[i];
     const offset = i * SEGMENT_DURATION;
 
-    // 合并 scenes，加时间偏移
-    const scenes = (r.scenes as Array<{ timestamp: string; description: string; tags: string[] }>) || [];
+    // 合并 scenes（兼容新旧格式）
+    const scenes = (r.scenes as any[]) || [];
     for (const s of scenes) {
+      const start = toSeconds(s.startTime ?? s.timestamp) + offset;
+      const end = toSeconds(s.endTime ?? s.startTime ?? s.timestamp) + offset;
       allScenes.push({
-        ...s,
-        timestamp: formatTimestamp(parseTimestamp(s.timestamp) + offset),
+        startTime: start,
+        endTime: end > start ? end : start + 3,
+        description: s.description || "",
+        shotType: s.shotType || "",
+        motion: s.motion || "",
+        quality: s.quality || "",
+        tags: s.tags || [],
       });
     }
 
-    // 合并 highlights，加时间偏移
-    const highlights = (r.highlights as Array<{ timestamp: string; description: string; score: number }>) || [];
+    // 合并 highlights（兼容新旧格式）
+    const highlights = (r.highlights as any[]) || [];
     for (const h of highlights) {
+      const hStart = toSeconds(h.startTime ?? h.timestamp) + offset;
+      const hEnd = toSeconds(h.endTime ?? h.startTime ?? h.timestamp) + offset;
       allHighlights.push({
-        ...h,
-        timestamp: formatTimestamp(parseTimestamp(h.timestamp) + offset),
+        startTime: hStart,
+        endTime: hEnd > hStart ? hEnd : hStart + 2,
+        description: h.description || "",
+        score: h.score || 5,
       });
     }
 
