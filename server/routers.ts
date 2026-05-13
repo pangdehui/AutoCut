@@ -11,6 +11,7 @@ import { createProject, getUserProjects, getProjectById, getProjectWithVideoCoun
 import { createTask, getUserTasks, getTaskById, deleteTask } from "./services/taskService";
 import { getAnalysisByTaskId } from "./services/analysisService";
 import { getSubtitlesByTaskId } from "./services/subtitleService";
+import { listBgmFiles } from "./services/bgmService";
 import { listUsers, setUserActive, setUserRole, getCreditTransactions, getTaskStats, listAllTasks, getOverviewStats, getDailyUserRegistrations, getDailyCreditConsumption, getDailyTaskCounts, getAvgProcessingDuration } from "./services/adminService";
 
 // 初始化积分费率
@@ -138,6 +139,13 @@ export const appRouter = router({
       }),
   }),
 
+  bgm: router({
+    list: protectedProcedure.query(() => {
+      const files = listBgmFiles();
+      return { success: true, data: files };
+    }),
+  }),
+
   analysis: router({
     byTaskId: protectedProcedure
       .input(z.object({ taskId: z.number() }))
@@ -167,20 +175,29 @@ export const appRouter = router({
     create: protectedProcedure
       .input(
         z.object({
-          videoId: z.number(),
-          taskType: z.enum(["analysis", "editing", "subtitle", "combined", "ai_edit", "tts"]),
+          videoId: z.number().optional(),
+          taskType: z.enum(["analysis", "editing", "subtitle", "combined", "ai_edit", "tts", "ai_video_creator"]),
           parameters: z.any().optional(),
         })
       )
       .mutation(async ({ input, ctx }) => {
-        // 检查视频是否存在且属于用户
-        const video = await getVideoById(input.videoId, ctx.user.id);
-        if (!video) {
-          return { success: false, message: "视频不存在" };
+        // ai_video_creator 类型由 AI 自动选择视频，不需要前端传 videoId
+        if (input.taskType !== "ai_video_creator") {
+          if (!input.videoId) {
+            return { success: false, message: "请指定视频" };
+          }
+          const video = await getVideoById(input.videoId, ctx.user.id);
+          if (!video) {
+            return { success: false, message: "视频不存在" };
+          }
         }
 
-        // 计算所需积分（暂时使用固定值，实际应根据视频时长计算）
-        const requiredCredits = input.taskType === "analysis" ? 10 : input.taskType === "editing" || input.taskType === "ai_edit" ? 15 : input.taskType === "tts" ? 5 : 8;
+        // 计算所需积分
+        const requiredCredits =
+          input.taskType === "analysis" ? 10 :
+          input.taskType === "editing" || input.taskType === "ai_edit" ? 15 :
+          input.taskType === "tts" ? 5 :
+          input.taskType === "ai_video_creator" ? 30 : 8;
 
         // 检查用户积分
         const userCredits = await getUserCredits(ctx.user.id);
@@ -191,14 +208,19 @@ export const appRouter = router({
         // 创建任务
         const task = await createTask({
           userId: ctx.user.id,
-          videoId: input.videoId,
+          videoId: input.videoId ?? 0,
           taskType: input.taskType,
           parameters: input.parameters,
         });
         if (!task) return { success: false, message: "创建任务失败" };
 
         // 扣除积分
-        const creditType: "analysis" | "editing" | "subtitle" = input.taskType === "combined" ? "analysis" : input.taskType === "ai_edit" ? "editing" : input.taskType === "tts" ? "subtitle" : input.taskType;
+        const creditType: "analysis" | "editing" | "subtitle" | "ai_video_creator" =
+          input.taskType === "combined" ? "analysis" :
+          input.taskType === "ai_edit" ? "editing" :
+          input.taskType === "tts" ? "subtitle" :
+          input.taskType === "ai_video_creator" ? "ai_video_creator" :
+          input.taskType;
         const deductResult = await deductCredits(ctx.user.id, requiredCredits, creditType, task.id);
         if (!deductResult.success) {
           // 如果扣积分失败，删除任务

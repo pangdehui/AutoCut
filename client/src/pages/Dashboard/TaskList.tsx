@@ -3,16 +3,29 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { Loader2, Clock, CheckCircle2, AlertCircle, Trash2, RotateCcw, BarChart3, FileText } from "lucide-react";
+import { Loader2, Clock, CheckCircle2, AlertCircle, Trash2, RotateCcw, BarChart3, FileText, Download } from "lucide-react";
 import AnalysisViewer from "./AnalysisViewer";
 import SubtitleViewer from "./SubtitleViewer";
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   analysis: "AI 分析",
   editing: "视频剪辑",
+  ai_edit: "AI 剪辑",
+  tts: "AI 配音",
   subtitle: "字幕生成",
+  ai_video_creator: "AI 创作",
   combined: "综合处理",
 };
+
+const TYPE_FILTERS = [
+  { value: "all",              label: "全部" },
+  { value: "analysis",         label: "AI 分析" },
+  { value: "ai_video_creator", label: "AI 创作" },
+  { value: "ai_edit",          label: "AI 剪辑" },
+  { value: "editing",          label: "视频剪辑" },
+  { value: "tts",              label: "AI 配音" },
+  { value: "subtitle",         label: "字幕生成" },
+];
 
 const OPERATION_LABELS: Record<string, string> = {
   trim: "裁剪",
@@ -29,6 +42,57 @@ const STATUS_FILTERS = [
   { value: "completed", label: "已完成" },
   { value: "failed", label: "失败" },
 ];
+
+function formatSize(bytes: number): string {
+  if (!bytes || bytes <= 0) return "";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+}
+
+function ResultSummary({ task }: { task: any }) {
+  const result = task.result as Record<string, any> | null;
+  if (!result) return null;
+
+  const outputPath = result.outputPath || result.audioPath || result.burntVideo;
+  const fileName = outputPath ? String(outputPath).split(/[/\\]/).pop() : null;
+  const fileSize = formatSize(result.fileSize || 0);
+  const summary =
+    result.title ||
+    result.explanation ||
+    result.message ||
+    (result.subtitles ? `已生成 ${Object.keys(result.subtitles).join("、")} 字幕` : null);
+
+  return (
+    <div className="bg-muted/40 rounded p-3 text-xs space-y-1.5">
+      {summary && <p className="text-foreground">{summary}</p>}
+      {fileName && (
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <FileText className="h-3 w-3 shrink-0" />
+          <span className="truncate flex-1">{fileName}</span>
+          {fileSize && <span className="shrink-0">{fileSize}</span>}
+        </div>
+      )}
+      {outputPath && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs"
+          onClick={() => {
+            const a = document.createElement("a");
+            a.href = `/api/files/stream?path=${encodeURIComponent(outputPath)}`;
+            a.download = fileName || "output";
+            a.click();
+          }}
+        >
+          <Download className="h-3 w-3 mr-1" />
+          下载
+        </Button>
+      )}
+    </div>
+  );
+}
 
 function StatusBadge({ status }: { status: string }) {
   const config: Record<string, { icon: React.ReactNode; className: string; label: string }> = {
@@ -79,6 +143,7 @@ function ProgressBar({ progress }: { progress: number }) {
 
 export default function TaskList() {
   const [statusFilter, setStatusFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
   const utils = trpc.useUtils();
 
   const tasksQuery = trpc.tasks.list.useQuery(
@@ -99,7 +164,10 @@ export default function TaskList() {
     deleteMutation.mutate({ id });
   };
 
-  const tasks = tasksQuery.data?.data || [];
+  const allTasks = tasksQuery.data?.data || [];
+  const tasks = typeFilter === "all"
+    ? allTasks
+    : allTasks.filter((t: any) => t.taskType === typeFilter);
 
   // 追踪任务状态变化，完成/失败时发送通知
   const prevStatusRef = useRef<Record<number, string>>({});
@@ -138,7 +206,21 @@ export default function TaskList() {
           </div>
         </CardHeader>
         <CardContent>
-          {/* 筛选器 */}
+          {/* 类型筛选 */}
+          <div className="flex gap-2 mb-3 flex-wrap">
+            {TYPE_FILTERS.map((f) => (
+              <Button
+                key={f.value}
+                variant={typeFilter === f.value ? "default" : "outline"}
+                size="sm"
+                onClick={() => setTypeFilter(f.value)}
+              >
+                {f.label}
+              </Button>
+            ))}
+          </div>
+
+          {/* 状态筛选 */}
           <div className="flex gap-2 mb-4 flex-wrap">
             {STATUS_FILTERS.map((f) => (
               <Button
@@ -245,13 +327,7 @@ export default function TaskList() {
                   )}
 
                   {task.status === "completed" && task.result != null
-                    ? (
-                      <div className="bg-muted/50 rounded p-2 text-xs text-muted-foreground">
-                        <pre className="whitespace-pre-wrap font-sans">
-                          {JSON.stringify(task.result as object, null, 2)}
-                        </pre>
-                      </div>
-                    )
+                    ? <ResultSummary task={task} />
                     : null}
 
                   {task.status === "failed" && task.errorMessage && (

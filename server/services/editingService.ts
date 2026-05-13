@@ -165,6 +165,102 @@ export async function concatVideos(
   if (fs.existsSync(concatList)) fs.unlinkSync(concatList);
 }
 
+// ====== 转场（xfade）支持 ======
+
+export type TransitionType =
+  | "cut"
+  | "fade"
+  | "fadeblack"
+  | "fadewhite"
+  | "dissolve"
+  | "slideleft"
+  | "slideright"
+  | "slideup"
+  | "slidedown"
+  | "wipeleft"
+  | "wiperight"
+  | "circleopen"
+  | "circleclose"
+  | "zoomin";
+
+export interface SegmentTransition {
+  type: TransitionType;
+  duration?: number;
+}
+
+export async function getVideoDurationSec(filePath: string): Promise<number> {
+  const { stdout } = await execAsync(
+    `ffprobe -v error -show_entries format=duration -of csv=p=0 "${filePath}"`
+  );
+  return parseFloat(stdout.trim()) || 0;
+}
+
+/**
+ * 使用 xfade 转场拼接多段视频。
+ * - transitions[i] 表示「inputPaths[i] 与 inputPaths[i+1] 之间」的转场，长度必须是 inputs.length-1
+ * - 全部为 "cut" 时回退到 concatVideos（demuxer 拼接，速度更快）
+ * - 不携带音频（-an）；调用方负责后续混入 TTS / 原声
+ * - 自动归一化分辨率、SAR、帧率，避免不同源素材的 xfade 报错
+ */
+export async function concatVideosWithTransitions(
+  inputPaths: string[],
+  outputPath: string,
+  transitions: SegmentTransition[],
+  options: { width?: number; height?: number; fps?: number } = {}
+): Promise<void> {
+  ensureOutputDir();
+  if (inputPaths.length === 0) throw new Error("没有视频片段");
+  if (inputPaths.length === 1) {
+    await execAsync(`ffmpeg -i "${inputPaths[0]}" -c copy "${outputPath}" -y`);
+    return;
+  }
+
+  const allCut = transitions.length === 0
+    || transitions.every((t) => !t || t.type === "cut");
+  if (allCut) {
+    await concatVideos(inputPaths, outputPath);
+    return;
+  }
+
+  const width = options.width ?? 1920;
+  const height = options.height ?? 1080;
+  const fps = options.fps ?? 30;
+
+  const durations: number[] = [];
+  for (const p of inputPaths) durations.push(await getVideoDurationSec(p));
+
+  const inputArgs = inputPaths.map((p) => `-i "${p}"`).join(" ");
+  const filters: string[] = [];
+
+  for (let i = 0; i < inputPaths.length; i++) {
+    filters.push(
+      `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps},format=yuv420p[v${i}]`
+    );
+  }
+
+  let prev = "v0";
+  let runningDuration = durations[0];
+  for (let i = 1; i < inputPaths.length; i++) {
+    const t = transitions[i - 1] || { type: "fade" as TransitionType };
+    const transType: TransitionType = t.type === "cut" ? "fade" : t.type;
+    const requested = t.duration ?? 0.4;
+    const maxAllowed = Math.max(0.1, Math.min(durations[i - 1] / 2, durations[i] / 2, 1.5));
+    const transDur = Math.min(Math.max(0.15, requested), maxAllowed);
+    const offset = Math.max(0, runningDuration - transDur);
+    const outLabel = i === inputPaths.length - 1 ? "vout" : `vt${i}`;
+    filters.push(
+      `[${prev}][v${i}]xfade=transition=${transType}:duration=${transDur.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`
+    );
+    prev = outLabel;
+    runningDuration = runningDuration + durations[i] - transDur;
+  }
+
+  const filterStr = filters.join(";");
+  await execAsync(
+    `ffmpeg ${inputArgs} -filter_complex "${filterStr}" -map "[vout]" -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p -an "${outputPath}" -y`
+  );
+}
+
 export async function adjustVolume(
   inputPath: string,
   outputPath: string,

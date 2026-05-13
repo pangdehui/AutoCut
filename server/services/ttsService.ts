@@ -58,7 +58,7 @@ async function runTts(
   const forwardResult = await submitGatewayTask("audio_tts", {
     text: params.text,
     voice_id: params.voiceId,
-    speed: String(params.speed || 1),
+    speed: Math.max(0.5, Math.min(2.0, Number(params.speed) || 1.0)),
     vol: String(params.vol || 1),
   });
 

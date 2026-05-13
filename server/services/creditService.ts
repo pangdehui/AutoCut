@@ -28,7 +28,7 @@ export async function getUserCredits(userId: number) {
 /**
  * 获取积分费率
  */
-export async function getCreditRate(type: "analysis" | "editing" | "subtitle") {
+export async function getCreditRate(type: "analysis" | "editing" | "subtitle" | "ai_video_creator") {
   const db = await getDb();
   if (!db) {
     return null;
@@ -52,7 +52,7 @@ export async function getCreditRate(type: "analysis" | "editing" | "subtitle") {
  * 计算所需积分
  */
 export async function calculateRequiredCredits(
-  type: "analysis" | "editing" | "subtitle",
+  type: "analysis" | "editing" | "subtitle" | "ai_video_creator",
   durationInSeconds: number
 ): Promise<number | null> {
   const rate = await getCreditRate(type);
@@ -71,7 +71,7 @@ export async function calculateRequiredCredits(
 export async function deductCredits(
   userId: number,
   amount: number,
-  type: "analysis" | "editing" | "subtitle",
+  type: "analysis" | "editing" | "subtitle" | "ai_video_creator",
   taskId?: number,
   description?: string
 ): Promise<{ success: boolean; message: string }> {
@@ -244,6 +244,11 @@ export async function initializeCreditRates(): Promise<void> {
         type: "subtitle" as const,
         creditsPerMinute: "8",
         description: "多语言字幕生成",
+      },
+      {
+        type: "ai_video_creator" as const,
+        creditsPerMinute: "30",
+        description: "AI 视频创作（理解需求+脚本+配音+剪辑）",
       },
     ]);
 

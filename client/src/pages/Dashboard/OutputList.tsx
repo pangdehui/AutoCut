@@ -1,20 +1,32 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
 import {
   Loader2, CheckCircle2, FileVideo, FileAudio, FileText,
-  Scissors, Wand2, Volume2, Subtitles, Download, Eye, Play,
+  Scissors, Wand2, Volume2, Subtitles, Download, Eye, Play, Sparkles,
 } from "lucide-react";
 import VideoPlayer from "@/components/VideoPlayer";
+import SubtitleViewer from "./SubtitleViewer";
 
 const TYPE_CONFIG: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
   editing:  { label: "视频剪辑", icon: <Scissors className="h-4 w-4" />, color: "bg-purple-100 text-purple-700" },
   ai_edit:  { label: "AI 剪辑",  icon: <Wand2 className="h-4 w-4" />, color: "bg-indigo-100 text-indigo-700" },
   tts:      { label: "AI 配音",  icon: <Volume2 className="h-4 w-4" />, color: "bg-pink-100 text-pink-700" },
-  subtitle: { label: "字幕生成", icon: <Subtitles className="h-4 w-4" />, color: "bg-teal-100 text-teal-700" },
+  subtitle:          { label: "字幕生成", icon: <Subtitles className="h-4 w-4" />, color: "bg-teal-100 text-teal-700" },
+  ai_video_creator:  { label: "AI 创作",  icon: <Sparkles className="h-4 w-4" />, color: "bg-amber-100 text-amber-700" },
 };
+
+const TYPE_FILTERS: { value: string; label: string }[] = [
+  { value: "all",              label: "全部" },
+  { value: "ai_video_creator", label: "AI 创作" },
+  { value: "ai_edit",          label: "AI 剪辑" },
+  { value: "editing",          label: "视频剪辑" },
+  { value: "tts",              label: "AI 配音" },
+  { value: "subtitle",         label: "字幕生成" },
+];
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + " B";
@@ -24,15 +36,21 @@ function formatSize(bytes: number): string {
 }
 
 export default function OutputList() {
+  const [typeFilter, setTypeFilter] = useState("all");
   const [player, setPlayer] = useState<{ open: boolean; src: string; title: string; isAudio: boolean }>({
     open: false, src: "", title: "", isAudio: false,
   });
+  const [subtitleTaskId, setSubtitleTaskId] = useState<number | null>(null);
 
   const tasksQuery = trpc.tasks.list.useQuery(
     { status: "completed" },
   );
 
   const tasks = tasksQuery.data?.data || [];
+  const filteredTasks = useMemo(
+    () => (typeFilter === "all" ? tasks : tasks.filter((t: any) => t.taskType === typeFilter)),
+    [tasks, typeFilter],
+  );
 
   const getOutputInfo = (task: any) => {
     const result = task.result as Record<string, any> | null;
@@ -44,6 +62,10 @@ export default function OutputList() {
     if (outputPath) {
       const isAudio = outputPath.endsWith(".mp3") || outputPath.endsWith(".wav");
       return { outputPath, fileSize, isAudio, explanation: result.explanation || result.message || "" };
+    }
+    // 字幕任务无烧录视频时，回退到原始视频预览
+    if (result.originalVideo) {
+      return { outputPath: result.originalVideo as string, fileSize: 0, isAudio: false, explanation: result.message || "" };
     }
     return null;
   };
@@ -63,17 +85,41 @@ export default function OutputList() {
         <p className="text-muted-foreground text-sm">所有剪辑、配音、字幕的处理输出</p>
       </div>
 
-      {tasks.length === 0 ? (
+      {/* 类型筛选 */}
+      <div className="flex gap-2 flex-wrap">
+        {TYPE_FILTERS.map((f) => {
+          const count = f.value === "all"
+            ? tasks.length
+            : tasks.filter((t: any) => t.taskType === f.value).length;
+          return (
+            <Button
+              key={f.value}
+              variant={typeFilter === f.value ? "default" : "outline"}
+              size="sm"
+              onClick={() => setTypeFilter(f.value)}
+            >
+              {f.label}
+              <span className="ml-1.5 text-xs opacity-70">{count}</span>
+            </Button>
+          );
+        })}
+      </div>
+
+      {filteredTasks.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center">
             <CheckCircle2 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-            <p className="text-muted-foreground">暂无生成结果</p>
-            <p className="text-sm text-muted-foreground mt-2">完成任务后产出会显示在这里</p>
+            <p className="text-muted-foreground">
+              {tasks.length === 0 ? "暂无生成结果" : "当前筛选下无结果"}
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              {tasks.length === 0 ? "完成任务后产出会显示在这里" : "试试切换其他类型"}
+            </p>
           </CardContent>
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {tasks.map((task: any) => {
+          {filteredTasks.map((task: any) => {
             const cfg = TYPE_CONFIG[task.taskType] || TYPE_CONFIG.editing;
             const output = getOutputInfo(task);
 
@@ -137,6 +183,14 @@ export default function OutputList() {
                           <Download className="h-3.5 w-3.5" />
                         </Button>
                       </div>
+                      {task.taskType === "subtitle" && (
+                        <Button
+                          size="sm" variant="ghost" className="w-full text-xs"
+                          onClick={() => setSubtitleTaskId(task.id)}
+                        >
+                          <FileText className="h-3 w-3 mr-1" />查看字幕文件
+                        </Button>
+                      )}
                     </>
                   ) : task.taskType === "subtitle" ? (
                     <>
@@ -148,16 +202,10 @@ export default function OutputList() {
                         size="sm"
                         variant="outline"
                         className="w-full"
-                        onClick={() => {
-                          const subs = task.result?.subtitles as Record<string, any> | undefined;
-                          if (subs) {
-                            const lang = Object.keys(subs)[0];
-                            if (lang) alert(`字幕语言: ${Object.keys(subs).join(", ")}`);
-                          }
-                        }}
+                        onClick={() => setSubtitleTaskId(task.id)}
                       >
                         <Eye className="h-3.5 w-3.5 mr-1" />
-                        查看字幕信息
+                        查看字幕
                       </Button>
                     </>
                   ) : (
@@ -181,6 +229,16 @@ export default function OutputList() {
         src={player.src}
         isAudio={player.isAudio}
       />
+
+      <Dialog open={subtitleTaskId !== null} onOpenChange={(v) => !v && setSubtitleTaskId(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>字幕详情 {subtitleTaskId !== null ? `#${subtitleTaskId}` : ""}</DialogTitle>
+          </DialogHeader>
+          {subtitleTaskId !== null && <SubtitleViewer taskId={subtitleTaskId} />}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
+

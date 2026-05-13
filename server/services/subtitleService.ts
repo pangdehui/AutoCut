@@ -3,8 +3,11 @@ import { subtitles, videos } from "../../drizzle/schema";
 import { eq } from "drizzle-orm";
 import type { ProcessingTask } from "../../drizzle/schema";
 import { registerTaskHandler } from "./taskService";
-import { openai } from "../_core/openai";
 import { ENV } from "../_core/env";
+import { openai } from "../_core/openai";
+import { transcribeAudio, mergeToSentences } from "./volcanoAsrService";
+import { subtitleStyleString, type SubtitleStyle, type SubtitleConfig } from "./subtitleStyle";
+import { pickBgmByMood, type BgmMood } from "./bgmService";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
@@ -36,11 +39,39 @@ async function getVideoPath(videoId: number): Promise<string | null> {
 
 async function extractAudio(videoPath: string, taskId: number): Promise<string> {
   ensureDirs();
+
+  // 先检查视频是否包含音频流
+  try {
+    const { stdout } = await execAsync(
+      `ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${videoPath}"`
+    );
+    if (!stdout.trim()) {
+      throw new Error("该视频没有音频轨道，无法通过语音识别生成字幕。请确认视频包含人声。");
+    }
+  } catch (e: any) {
+    if (e.message?.includes("没有音频轨道") || e.message?.includes("无法通过语音识别")) throw e;
+    // ffprobe 失败不阻塞，继续尝试提取
+  }
+
   const audioPath = path.join(AUDIO_DIR, `audio_${taskId}.mp3`);
 
   await execAsync(
     `ffmpeg -i "${videoPath}" -vn -acodec libmp3lame -q:a 2 "${audioPath}" -y`
   );
+
+  // 检查提取的音频是否有效（时长 > 0.5 秒）
+  try {
+    const { stdout } = await execAsync(
+      `ffprobe -v error -show_entries format=duration -of csv=p=0 "${audioPath}"`
+    );
+    const duration = parseFloat(stdout.trim());
+    if (isNaN(duration) || duration < 0.5) {
+      throw new Error("提取的音频太短或为空，视频可能没有有效的人声内容。");
+    }
+  } catch (e: any) {
+    if (e.message?.includes("太短") || e.message?.includes("人声")) throw e;
+    // ffprobe 失败不阻塞
+  }
 
   return audioPath;
 }
@@ -76,59 +107,24 @@ function generateSrt(entries: SubEntry[]): string {
 async function runASR(audioPath: string, taskId: number): Promise<SubEntry[]> {
   ensureDirs();
 
-  try {
-    const audioStream = fs.createReadStream(audioPath);
-    const response = await openai.audio.transcriptions.create({
-      file: audioStream,
-      model: ENV.openaiWhisperModel,
-      response_format: "verbose_json",
-    });
+  const rawSegments = await transcribeAudio(audioPath);
 
-    const segments = (response as any).segments as
-      | { start: number; end: number; text: string }[]
-      | undefined;
-
-    if (segments && segments.length > 0) {
-      return segments.map((seg, i) => ({
-        index: i + 1,
-        start: seg.start,
-        end: seg.end,
-        text: seg.text.trim(),
-      }));
-    }
-
-    if (response.text) {
-      return [{ index: 1, start: 0, end: 5, text: response.text.trim() }];
-    }
-  } catch (error) {
-    console.warn("[Subtitle] OpenAI Whisper ASR failed:", String(error));
+  if (rawSegments.length === 0) {
+    throw new Error("火山 ASR 未返回任何识别结果，视频可能没有人声或音频质量过低。");
   }
 
-  return generateMockSubtitles();
-}
-
-function generateMockSubtitles(): SubEntry[] {
-  const lines = [
-    "大家好，欢迎观看本期视频。",
-    "今天我们来聊聊一个非常有趣的话题。",
-    "首先让我们看一下基本的操作方法。",
-    "打开软件之后，你可以看到主界面上有几个选项。",
-    "点击开始按钮，系统会自动进行初始化设置。",
-    "在整个过程中，你不需要手动干预。",
-    "接下来是最关键的部分，请仔细看。",
-    "这种方式可以极大提高工作效率，节省大量时间。",
-    "根据测试数据显示，性能提升了约百分之三十。",
-    "当然，具体效果还要根据实际情况来判断。",
-    "如果你有任何问题，可以在评论区留言。",
-    "最后总结一下今天的主要内容。",
-    "感谢大家的收看，我们下期再见。",
-  ];
-
-  return lines.map((text, i) => ({
+  let segments = rawSegments;
+  try {
+    segments = await mergeToSentences(rawSegments);
+  } catch (e) {
+    console.warn("[Subtitle] mergeToSentences 失败，使用原始片段:", String(e));
+    segments = rawSegments;
+  }
+  return segments.map((seg, i) => ({
     index: i + 1,
-    start: i * 5 + 1,
-    end: i * 5 + 4.5,
-    text,
+    start: seg.start,
+    end: seg.end,
+    text: seg.text,
   }));
 }
 
@@ -188,10 +184,14 @@ async function translateSubtitles(
 async function burnSubtitles(
   videoPath: string,
   srtPath: string,
-  outputPath: string
+  outputPath: string,
+  style: SubtitleStyle = "default",
+  config?: SubtitleConfig,
 ): Promise<void> {
+  const safeSrt = srtPath.replace(/\\/g, "/").replace(/:/g, "\\:");
+  const styleStr = subtitleStyleString(style, config);
   await execAsync(
-    `ffmpeg -i "${videoPath}" -vf "subtitles='${srtPath.replace(/\\/g, "/")}':force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2'" -c:v libx264 -preset medium -crf 23 -c:a aac "${outputPath}" -y`
+    `ffmpeg -i "${videoPath}" -vf "subtitles='${safeSrt}':force_style='${styleStr}'" -c:v libx264 -preset medium -crf 23 -c:a aac "${outputPath}" -y`
   );
 }
 
@@ -200,6 +200,16 @@ async function burnSubtitles(
 interface SubtitleParams {
   targetLanguages?: string[];
   burnIn?: boolean;
+  /** 烧录字幕样式：default / bold_caption / minimal / tiktok_yellow */
+  style?: SubtitleStyle;
+  /** 字幕样式细粒度覆盖：在 style 预设上叠加（颜色/字号/字体/位置 等） */
+  subtitleConfig?: SubtitleConfig;
+  /** 烧录使用哪个语言版本，默认中文优先 */
+  burnLanguage?: string;
+  /** 背景音乐情绪，不填则不加 BGM */
+  bgmMood?: BgmMood;
+  /** BGM 音量 0-1 */
+  bgmVolume?: number;
 }
 
 async function runSubtitle(
@@ -257,7 +267,15 @@ async function runSubtitle(
   // 可选：压制字幕到视频
   let burntVideo: string | null = null;
   if (burnIn && targetLanguages.length > 0) {
-    const burnLang = targetLanguages.includes("zh") ? "zh" : targetLanguages[0];
+    const preferredLang = params.burnLanguage;
+    let burnLang: string;
+    if (preferredLang && (preferredLang === "zh" || targetLanguages.includes(preferredLang))) {
+      burnLang = preferredLang;
+    } else if (targetLanguages.includes("zh")) {
+      burnLang = "zh";
+    } else {
+      burnLang = targetLanguages[0];
+    }
     const srtToBurn = path.join(SUBTITLE_DIR, `sub_${task.id}_${burnLang}.srt`);
     const burntPath = path.resolve("uploads/output", `burned_${task.id}.mp4`);
 
@@ -265,8 +283,32 @@ async function runSubtitle(
     if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
     await updateProgress(85);
-    await burnSubtitles(videoPath, srtToBurn, burntPath);
+    await burnSubtitles(videoPath, srtToBurn, burntPath, params.style || "default", params.subtitleConfig);
     burntVideo = burntPath;
+  }
+
+  // 可选：添加背景音乐
+  let finalVideo: string | null = burntVideo ?? videoPath;
+  let bgmApplied = false;
+  if (params.bgmMood && params.bgmMood !== "none") {
+    const bgmPath = pickBgmByMood(params.bgmMood);
+    if (bgmPath) {
+      const bgmMixedPath = path.resolve("uploads/output", `bgm_${task.id}.mp4`);
+      const outDir = path.resolve("uploads/output");
+      if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+      await updateProgress(92);
+      // 将 BGM 混入视频：BGM 音量降低，原视频音频保留
+      const bgmVol = params.bgmVolume ?? 0.15;
+      await execAsync(
+        `ffmpeg -i "${finalVideo}" -i "${bgmPath}" -filter_complex "` +
+        `[1:a]volume=${bgmVol}[bgm];` +
+        `[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[out]" ` +
+        `-map 0:v -map "[out]" -c:v copy -shortest "${bgmMixedPath}" -y`
+      );
+      finalVideo = bgmMixedPath;
+      bgmApplied = true;
+    }
   }
 
   // 清理音频
@@ -277,8 +319,13 @@ async function runSubtitle(
   return {
     subtitles: results,
     burntVideo,
+    outputPath: finalVideo ?? videoPath,
+    originalVideo: videoPath,
+    burnStyle: burntVideo ? (params.style || "default") : null,
+    bgmApplied,
+    bgmMood: bgmApplied ? params.bgmMood : null,
     totalEntries: entries.length,
-    message: `字幕生成完成，共 ${entries.length} 条字幕，${targetLanguages.length} 种语言`,
+    message: `字幕生成完成，共 ${entries.length} 条字幕，${targetLanguages.length} 种语言${bgmApplied ? " + BGM" : ""}`,
   };
 }
 

@@ -3,7 +3,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Loader2, Send, User, Sparkles } from "lucide-react";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, type ReactNode } from "react";
 import { Streamdown } from "streamdown";
 
 /**
@@ -12,6 +12,15 @@ import { Streamdown } from "streamdown";
 export type Message = {
   role: "system" | "user" | "assistant";
   content: string;
+  /** 消息下方显示的操作按钮 */
+  actions?: ReactNode;
+};
+
+export type MentionItem = {
+  id: number | string;
+  label: string;
+  thumbnail?: string;
+  hint?: string;
 };
 
 export type AIChatBoxProps = {
@@ -57,6 +66,18 @@ export type AIChatBoxProps = {
    * Click to send directly
    */
   suggestedPrompts?: string[];
+
+  /**
+   * Optional list of items selectable via "@" mention popup.
+   * When provided, typing "@" in the textarea opens an autocomplete.
+   */
+  mentionItems?: MentionItem[];
+
+  /**
+   * Callback when user picks a mention from the popup.
+   * The "@query" token will be removed from the input automatically.
+   */
+  onMention?: (item: MentionItem) => void;
 };
 
 /**
@@ -119,12 +140,61 @@ export function AIChatBox({
   height = "600px",
   emptyStateMessage = "Start a conversation with AI",
   suggestedPrompts,
+  mentionItems,
+  onMention,
 }: AIChatBoxProps) {
   const [input, setInput] = useState("");
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputAreaRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // ============ Mention popup state ============
+  const [mention, setMention] = useState<{
+    open: boolean; query: string; start: number; index: number;
+  }>({ open: false, query: "", start: -1, index: 0 });
+
+  const filteredMentions = useMemo(() => {
+    if (!mention.open || !mentionItems || mentionItems.length === 0) return [];
+    const q = mention.query.toLowerCase();
+    if (!q) return mentionItems.slice(0, 8);
+    return mentionItems
+      .filter((it) => it.label.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [mention.open, mention.query, mentionItems]);
+
+  // Reset highlight index when filtered list changes
+  useEffect(() => {
+    setMention((m) => (m.index >= filteredMentions.length ? { ...m, index: 0 } : m));
+  }, [filteredMentions.length]);
+
+  const detectMention = (value: string, cursor: number) => {
+    if (!mentionItems) return;
+    let atPos = -1;
+    for (let i = cursor - 1; i >= 0; i--) {
+      const ch = value[i];
+      if (ch === "@") { atPos = i; break; }
+      if (ch === " " || ch === "\n" || ch === "\t") break;
+    }
+    if (atPos >= 0) {
+      const q = value.slice(atPos + 1, cursor);
+      setMention({ open: true, query: q, start: atPos, index: 0 });
+    } else {
+      setMention((m) => (m.open ? { open: false, query: "", start: -1, index: 0 } : m));
+    }
+  };
+
+  const selectMention = (item: MentionItem) => {
+    if (!onMention) return;
+    onMention(item);
+    if (mention.start >= 0) {
+      const before = input.slice(0, mention.start);
+      const after = input.slice(mention.start + 1 + mention.query.length);
+      setInput(before + after);
+    }
+    setMention({ open: false, query: "", start: -1, index: 0 });
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  };
 
   // Filter out system messages
   const displayMessages = messages.filter((msg) => msg.role !== "system");
@@ -172,6 +242,7 @@ export function AIChatBox({
 
     onSendMessage(trimmedInput);
     setInput("");
+    setMention({ open: false, query: "", start: -1, index: 0 });
 
     // Scroll immediately after sending
     scrollToBottom();
@@ -181,7 +252,32 @@ export function AIChatBox({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (mention.open && filteredMentions.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMention((m) => ({ ...m, index: (m.index + 1) % filteredMentions.length }));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMention((m) => ({
+          ...m,
+          index: (m.index - 1 + filteredMentions.length) % filteredMentions.length,
+        }));
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        selectMention(filteredMentions[mention.index]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMention({ open: false, query: "", start: -1, index: 0 });
+        return;
+      }
+    }
+    if (e.key === "Enter" && !e.shiftKey && !mention.open) {
       e.preventDefault();
       handleSubmit(e);
     }
@@ -252,22 +348,29 @@ export function AIChatBox({
                       </div>
                     )}
 
-                    <div
-                      className={cn(
-                        "max-w-[80%] rounded-lg px-4 py-2.5",
-                        message.role === "user"
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-muted text-foreground"
-                      )}
-                    >
-                      {message.role === "assistant" ? (
-                        <div className="prose prose-sm dark:prose-invert max-w-none">
-                          <Streamdown>{message.content}</Streamdown>
+                    <div>
+                      <div
+                        className={cn(
+                          "max-w-[80%] rounded-lg px-4 py-2.5",
+                          message.role === "user"
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-muted text-foreground"
+                        )}
+                      >
+                        {message.role === "assistant" ? (
+                          <div className="prose prose-sm dark:prose-invert max-w-none">
+                            <Streamdown>{message.content}</Streamdown>
+                          </div>
+                        ) : (
+                          <p className="whitespace-pre-wrap text-sm">
+                            {message.content}
+                          </p>
+                        )}
+                      </div>
+                      {message.actions && (
+                        <div className="mt-2 flex gap-2 flex-wrap">
+                          {message.actions}
                         </div>
-                      ) : (
-                        <p className="whitespace-pre-wrap text-sm">
-                          {message.content}
-                        </p>
                       )}
                     </div>
 
@@ -306,12 +409,64 @@ export function AIChatBox({
       <form
         ref={inputAreaRef}
         onSubmit={handleSubmit}
-        className="flex gap-2 p-4 border-t bg-background/50 items-end"
+        className="relative flex gap-2 p-4 border-t bg-background/50 items-end"
       >
+        {/* Mention popup */}
+        {mention.open && filteredMentions.length > 0 && (
+          <div className="absolute bottom-full left-4 right-4 mb-1 bg-popover text-popover-foreground border rounded-md shadow-lg z-50 max-h-60 overflow-auto">
+            <div className="px-3 py-1.5 text-[10px] text-muted-foreground border-b">
+              ↑↓ 选择 · Enter/Tab 确认 · Esc 关闭
+            </div>
+            {filteredMentions.map((item, idx) => (
+              <button
+                key={item.id}
+                type="button"
+                className={cn(
+                  "w-full flex items-center gap-2 px-3 py-2 text-left transition-colors",
+                  idx === mention.index ? "bg-accent text-accent-foreground" : "hover:bg-muted"
+                )}
+                onMouseDown={(e) => { e.preventDefault(); selectMention(item); }}
+                onMouseEnter={() => setMention((m) => ({ ...m, index: idx }))}
+              >
+                {item.thumbnail && (
+                  <img
+                    src={item.thumbnail}
+                    alt=""
+                    className="h-8 w-12 object-cover rounded shrink-0 bg-muted"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                  />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm truncate">{item.label}</p>
+                  {item.hint && (
+                    <p className="text-[10px] text-muted-foreground truncate">{item.hint}</p>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
         <Textarea
           ref={textareaRef}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            const v = e.target.value;
+            setInput(v);
+            detectMention(v, e.target.selectionStart ?? v.length);
+          }}
+          onKeyUp={(e) => {
+            // 光标移动后(箭头键、点击)也要更新 mention 状态
+            const t = e.currentTarget;
+            detectMention(t.value, t.selectionStart ?? t.value.length);
+          }}
+          onClick={(e) => {
+            const t = e.currentTarget;
+            detectMention(t.value, t.selectionStart ?? t.value.length);
+          }}
+          onBlur={() => {
+            // 延迟关闭,避免 mousedown 选中前就关闭
+            setTimeout(() => setMention((m) => (m.open ? { ...m, open: false } : m)), 150);
+          }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           className="flex-1 max-h-32 resize-none min-h-9"

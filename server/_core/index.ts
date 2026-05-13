@@ -18,6 +18,7 @@ import "../services/editingService";
 import "../services/subtitleService";
 import "../services/aiEditService";
 import "../services/ttsService";
+import "../services/aiVideoCreatorService";
 import path from "node:path";
 import fs from "node:fs";
 

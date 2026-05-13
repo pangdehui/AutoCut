@@ -11,6 +11,13 @@ export const ENV = {
   openaiBaseUrl: process.env.OPENAI_BASE_URL ?? "",
   openaiChatModel: process.env.OPENAI_CHAT_MODEL ?? "gpt-4o",
   openaiWhisperModel: process.env.OPENAI_WHISPER_MODEL ?? "whisper-1",
+  volcanoAsrAppId: process.env.VOLCANO_ASR_APP_ID ?? "",
+  volcanoAsrAccessToken: process.env.VOLCANO_ASR_ACCESS_TOKEN ?? "",
+  volcanoAsrResourceId: process.env.VOLCANO_ASR_RESOURCE_ID ?? "",
   gatewayBaseUrl: process.env.GATEWAY_BASE_URL ?? "",
   gatewayApiKey: process.env.GATEWAY_API_KEY ?? "",
+  // DeepSeek 用于 AI 创作（方案生成、审查），与火山/OpenAI 分开
+  deepseekApiKey: process.env.DEEPSEEK_API_KEY ?? "",
+  deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com/v1",
+  deepseekModel: process.env.DEEPSEEK_MODEL ?? "deepseek-chat",
 };

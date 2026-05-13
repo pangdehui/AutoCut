@@ -1,0 +1,3 @@
+ALTER TABLE `creditRates` MODIFY COLUMN `type` enum('analysis','editing','subtitle','ai_video_creator') NOT NULL;--> statement-breakpoint
+ALTER TABLE `creditTransactions` MODIFY COLUMN `type` enum('analysis','editing','subtitle','admin_recharge','admin_deduction','ai_video_creator') NOT NULL;--> statement-breakpoint
+ALTER TABLE `processingTasks` MODIFY COLUMN `taskType` enum('analysis','editing','subtitle','combined','ai_edit','tts','ai_video_creator') NOT NULL;

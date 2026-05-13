@@ -36,6 +36,20 @@
       "when": 1778149578964,
       "tag": "0004_minor_havok",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1778200000000,
+      "tag": "0005_pink_firebird",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1778214321497,
+      "tag": "0006_reflective_the_captain",
+      "breakpoints": true
     }
   ]
 }

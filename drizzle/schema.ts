@@ -56,7 +56,7 @@ export const creditTransactions = mysqlTable("creditTransactions", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
   amount: bigint("amount", { mode: "number" }).notNull(), // 正数为充值，负数为消耗
-  type: mysqlEnum("type", ["analysis", "editing", "subtitle", "admin_recharge", "admin_deduction"]).notNull(),
+  type: mysqlEnum("type", ["analysis", "editing", "subtitle", "admin_recharge", "admin_deduction", "ai_video_creator"]).notNull(),
   description: text("description"),
   taskId: int("taskId"), // 关联的任务 ID
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -100,7 +100,7 @@ export const processingTasks = mysqlTable("processingTasks", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
   videoId: int("videoId").notNull(),
-  taskType: mysqlEnum("taskType", ["analysis", "editing", "subtitle", "combined", "ai_edit", "tts"]).notNull(),
+  taskType: mysqlEnum("taskType", ["analysis", "editing", "subtitle", "combined", "ai_edit", "tts", "ai_video_creator"]).notNull(),
   status: mysqlEnum("status", ["queued", "processing", "completed", "failed"]).default("queued").notNull(),
   progress: int("progress").default(0), // 0-100
   creditsUsed: bigint("creditsUsed", { mode: "number" }).default(0),
@@ -149,7 +149,7 @@ export type InsertSubtitle = typeof subtitles.$inferInsert;
 // 积分费率配置表
 export const creditRates = mysqlTable("creditRates", {
   id: int("id").autoincrement().primaryKey(),
-  type: mysqlEnum("type", ["analysis", "editing", "subtitle"]).notNull().unique(),
+  type: mysqlEnum("type", ["analysis", "editing", "subtitle", "ai_video_creator"]).notNull().unique(),
   creditsPerMinute: decimal("creditsPerMinute", { precision: 10, scale: 2 }).notNull(), // 每分钟消耗积分
   description: text("description"),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

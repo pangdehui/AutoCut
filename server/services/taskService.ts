@@ -3,11 +3,11 @@ import { processingTasks, videos } from "../../drizzle/schema";
 import { eq, desc, and } from "drizzle-orm";
 import type { ProcessingTask } from "../../drizzle/schema";
 
-type TaskType = "analysis" | "editing" | "subtitle" | "combined" | "ai_edit" | "tts";
+type TaskType = "analysis" | "editing" | "subtitle" | "combined" | "ai_edit" | "tts" | "ai_video_creator";
 
 interface CreateTaskParams {
   userId: number;
-  videoId: number;
+  videoId?: number;
   taskType: TaskType;
   parameters?: Record<string, unknown>;
 }
@@ -33,7 +33,7 @@ export async function createTask(params: CreateTaskParams): Promise<ProcessingTa
     .insert(processingTasks)
     .values({
       userId: params.userId,
-      videoId: params.videoId,
+      videoId: params.videoId ?? 0,
       taskType: params.taskType,
       status: "queued",
       progress: 0,

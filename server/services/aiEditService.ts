@@ -5,7 +5,7 @@ import type { ProcessingTask } from "../../drizzle/schema";
 import { registerTaskHandler } from "./taskService";
 import { openai } from "../_core/openai";
 import { ENV } from "../_core/env";
-import { trimVideo, sliceAndMerge, changeSpeed, reverseVideo, concatVideos, adjustVolume, resizeVideo, addWatermark, outputPath } from "./editingService";
+import { trimVideo, sliceAndMerge, changeSpeed, reverseVideo, concatVideos, concatVideosWithTransitions, adjustVolume, resizeVideo, addWatermark, outputPath, type TransitionType, type SegmentTransition } from "./editingService";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
@@ -69,6 +69,12 @@ async function getAnalysisForVideos(videoIds: number[]): Promise<Map<number, Rec
   return map;
 }
 
+const TRANSITION_TYPES: TransitionType[] = [
+  "cut", "fade", "fadeblack", "fadewhite", "dissolve",
+  "slideleft", "slideright", "slideup", "slidedown",
+  "wipeleft", "wiperight", "circleopen", "circleclose", "zoomin",
+];
+
 function buildMultiVideoPrompt(
   analyses: Map<number, Record<string, unknown>>,
   videoPaths: Map<number, string>,
@@ -118,6 +124,19 @@ ${userPrompt}
 时间格式使用 HH:MM:SS（如 00:01:30 表示1分30秒）。
 对于跨视频剪辑，每个片段需要指定来源视频编号（sourceVideo: 1, 2, 3...对应上面的视频1、视频2、视频3）。
 
+## 转场（仅 slice / concat 操作适用）
+- 可选类型：${TRANSITION_TYPES.join(", ")}
+- slice 数组中每个元素的 transition 表示「从上一个 slice 切到此 slice」时的转场，第一个 slice 的 transition 会被忽略
+- concat.transitions 数组长度 = videoOrder 长度 - 1，表示每个视频拼接边界的转场
+- transitionDuration 默认 0.4 秒，范围 0.2-1.0
+- 节奏建议：
+  · 高频快节奏（钩子段、高能段）：cut 或 zoomin、slideleft（0.2-0.3s），制造冲击力
+  · 平铺直叙（讲解、过渡句）：fade 或 dissolve（0.3-0.5s），自然不打断
+  · 段落切换（话题切换、情绪转折）：fadeblack 或 fadewhite（0.4-0.6s），形成"分章节"感
+  · 同一场景的两个不同机位：用 dissolve（0.3s）显得自然
+  · 同一个 sourceVideo 紧邻片段优先用 cut
+- 不要全用同一种转场，节奏感来自变化；但也不要每段都换，过度炫技反而廉价
+
 只返回 JSON，不要其他文字：
 
 {
@@ -128,9 +147,9 @@ ${userPrompt}
     "trim": { "videoIndex": 1, "startTime": "00:00:30", "endTime": "00:02:15" },
     "slices": [
       { "videoIndex": 1, "start": "00:00:10", "end": "00:00:30" },
-      { "videoIndex": 2, "start": "00:00:15", "end": "00:00:45" }
+      { "videoIndex": 2, "start": "00:00:15", "end": "00:00:45", "transition": "fadeblack", "transitionDuration": 0.5 }
     ],
-    "concat": { "videoOrder": [1, 2] },
+    "concat": { "videoOrder": [1, 2], "transitions": [{ "type": "fade", "duration": 0.4 }] },
     "speed": 1.5,
     "reverse": { "videoIndex": 1 },
     "resize": { "videoIndex": 1, "resolution": "1280:720" },
@@ -141,8 +160,8 @@ ${userPrompt}
 
 操作说明：
 - trim: 裁剪指定时间段
-- slice: 从视频中提取多个片段并合并（可跨视频）
-- concat: 将多个视频完整拼接在一起（按 videoOrder 顺序）
+- slice: 从视频中提取多个片段并合并（可跨视频，可带转场）
+- concat: 将多个视频完整拼接在一起（按 videoOrder 顺序，可带转场）
 - speed: 加速/减速（0.5=半速, 1.0=原速, 2.0=两倍速）
 - reverse: 倒放视频
 - resize: 调整分辨率（1920:1080/1280:720/640:360）
@@ -156,6 +175,10 @@ interface EditSlice {
   videoIndex: number;
   start: string;
   end: string;
+  /** 进入此切片时的转场（首切片忽略） */
+  transition?: TransitionType;
+  /** 转场时长（秒），默认 0.4 */
+  transitionDuration?: number;
 }
 
 interface EditPlan {
@@ -262,8 +285,15 @@ async function runAiEdit(
           if (!srcPath) throw new Error("源视频不存在");
           await sliceAndMerge(srcPath, output, singleSlices);
         } else {
-          // 多源视频切片合并
-          await multiSourceSliceAndMerge(videoPathMap, idList, slices, output);
+          // 多源视频切片合并（支持转场）
+          const transitions: SegmentTransition[] = [];
+          for (let i = 1; i < slices.length; i++) {
+            transitions.push({
+              type: (slices[i].transition || "fade") as TransitionType,
+              duration: slices[i].transitionDuration,
+            });
+          }
+          await multiSourceSliceAndMerge(videoPathMap, idList, slices, transitions, output);
         }
         break;
       }
@@ -277,7 +307,11 @@ async function runAiEdit(
         break;
       }
       case "concat": {
-        const order = (editParams.concat as { videoOrder: number[] })?.videoOrder || Array.from({ length: idList.length }, (_, i) => i + 1);
+        const concatCfg = editParams.concat as {
+          videoOrder?: number[];
+          transitions?: { type: TransitionType; duration?: number }[];
+        } | undefined;
+        const order = concatCfg?.videoOrder || Array.from({ length: idList.length }, (_, i) => i + 1);
         const paths: string[] = [];
         for (const idx of order) {
           const videoId = idList[Math.min(idx - 1, idList.length - 1)];
@@ -285,7 +319,18 @@ async function runAiEdit(
           if (!p) throw new Error(`视频 ${idx} 不存在`);
           paths.push(p);
         }
-        await concatVideos(paths, output);
+        const transitions: SegmentTransition[] = (concatCfg?.transitions || []).slice(0, paths.length - 1)
+          .map((t) => ({ type: t?.type || "fade", duration: t?.duration }));
+        // 不足时补 fade 默认
+        while (transitions.length < paths.length - 1) {
+          transitions.push({ type: "fade", duration: 0.4 });
+        }
+        const hasReal = transitions.some((t) => t.type !== "cut");
+        if (hasReal) {
+          await concatVideosWithTransitions(paths, output, transitions);
+        } else {
+          await concatVideos(paths, output);
+        }
         break;
       }
       case "reverse": {
@@ -346,12 +391,30 @@ async function runAiEdit(
 
   await updateProgress(100);
 
+  // 收集转场用于回显
+  const usedTransitions: { type: string; duration: number }[] = [];
+  if (operation === "slice") {
+    const slices = (editParams.slices as EditSlice[]) || [];
+    for (let i = 1; i < slices.length; i++) {
+      usedTransitions.push({
+        type: slices[i].transition || "fade",
+        duration: slices[i].transitionDuration ?? 0.4,
+      });
+    }
+  } else if (operation === "concat") {
+    const concatCfg = editParams.concat as { transitions?: { type: string; duration?: number }[] } | undefined;
+    for (const t of concatCfg?.transitions || []) {
+      usedTransitions.push({ type: t.type, duration: t.duration ?? 0.4 });
+    }
+  }
+
   return {
     outputPath: output,
     fileSize: stats.size,
     operation,
     explanation,
     message: explanation || `${operation} 处理完成`,
+    transitions: usedTransitions.length > 0 ? usedTransitions : undefined,
   };
 }
 
@@ -359,10 +422,10 @@ async function multiSourceSliceAndMerge(
   videoPathMap: Map<number, string>,
   idList: number[],
   slices: EditSlice[],
+  transitions: SegmentTransition[],
   outputPath: string
 ): Promise<void> {
   ensureOutputDir();
-  const concatList = path.join(OUTPUT_DIR, `concat_${Date.now()}.txt`);
   const tempFiles: string[] = [];
 
   for (let i = 0; i < slices.length; i++) {
@@ -377,20 +440,20 @@ async function multiSourceSliceAndMerge(
     await execAsync(
       `ffmpeg -ss ${s.start} -i "${srcPath}" -to ${dur} -c copy -avoid_negative_ts make_zero "${segPath}" -y`
     );
-    fs.appendFileSync(concatList, `file '${segPath.replace(/\\/g, "/")}'\n`);
     tempFiles.push(segPath);
   }
 
-  // 多源视频用重新编码确保兼容性
-  await execAsync(
-    `ffmpeg -f concat -safe 0 -i "${concatList}" -c:v libx264 -preset medium -crf 23 -c:a aac "${outputPath}" -y`
-  );
+  const hasReal = transitions.some((t) => t.type !== "cut");
+  if (hasReal) {
+    await concatVideosWithTransitions(tempFiles, outputPath, transitions);
+  } else {
+    await concatVideos(tempFiles, outputPath);
+  }
 
   // 清理临时文件
   for (const f of tempFiles) {
     if (fs.existsSync(f)) fs.unlinkSync(f);
   }
-  if (fs.existsSync(concatList)) fs.unlinkSync(concatList);
 }
 
 function ensureOutputDir() {

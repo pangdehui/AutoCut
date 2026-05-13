@@ -18,10 +18,26 @@ const LANGUAGES = [
   { value: "ru", label: "Русский" },
 ];
 
+type SubtitleStyle = "default" | "bold_caption" | "minimal" | "tiktok_yellow";
+
+const SUBTITLE_STYLES: { value: SubtitleStyle; label: string; desc: string }[] = [
+  { value: "default",       label: "默认",       desc: "白字黑边，通用" },
+  { value: "bold_caption",  label: "抖音大字",   desc: "白底加粗、大字号、黑描边，吸睛" },
+  { value: "tiktok_yellow", label: "黄色加粗",   desc: "黄字黑边，潮流二次元" },
+  { value: "minimal",       label: "极简",       desc: "细体小字、半透明边，纪录片/Vlog" },
+];
+
+const LANG_LABEL: Record<string, string> = {
+  zh: "中文", en: "English", ja: "日本語", ko: "한국어",
+  fr: "Français", de: "Deutsch", es: "Español", pt: "Português", ru: "Русский",
+};
+
 export default function SubtitlePanel() {
   const [selectedVideo, setSelectedVideo] = useState<number | null>(null);
   const [targetLangs, setTargetLangs] = useState<string[]>(["en"]);
   const [burnIn, setBurnIn] = useState(false);
+  const [style, setStyle] = useState<SubtitleStyle>("default");
+  const [burnLanguage, setBurnLanguage] = useState<string>("zh");
   const [submitting, setSubmitting] = useState(false);
 
   const videosQuery = trpc.videos.list.useQuery();
@@ -52,6 +68,7 @@ export default function SubtitlePanel() {
         parameters: {
           targetLanguages: targetLangs,
           burnIn,
+          ...(burnIn ? { style, burnLanguage } : {}),
         },
       });
 
@@ -69,6 +86,9 @@ export default function SubtitlePanel() {
   };
 
   const videos = videosQuery.data?.data || [];
+
+  // 烧录语言候选：原始中文 + 用户选的目标语言
+  const burnLangOptions = ["zh", ...targetLangs.filter((l) => l !== "zh")];
 
   return (
     <div className="space-y-6">
@@ -138,20 +158,68 @@ export default function SubtitlePanel() {
           </div>
 
           {/* 压制选项 */}
-          <div className="flex items-start gap-3 p-4 rounded-lg border">
-            <Checkbox
-              id="burnIn"
-              checked={burnIn}
-              onCheckedChange={(v) => setBurnIn(!!v)}
-            />
-            <div>
-              <label htmlFor="burnIn" className="text-sm font-medium cursor-pointer">
-                压制字幕到视频
-              </label>
-              <p className="text-xs text-muted-foreground">
-                将字幕烧录到视频画面中，不可移除。不勾选则仅生成 SRT 文件
-              </p>
+          <div className="space-y-3 p-4 rounded-lg border">
+            <div className="flex items-start gap-3">
+              <Checkbox
+                id="burnIn"
+                checked={burnIn}
+                onCheckedChange={(v) => setBurnIn(!!v)}
+              />
+              <div className="flex-1">
+                <label htmlFor="burnIn" className="text-sm font-medium cursor-pointer">
+                  压制字幕到视频
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  将字幕烧录到视频画面中，不可移除。不勾选则仅生成 SRT 文件
+                </p>
+              </div>
             </div>
+
+            {/* 烧录字幕的样式与语言（仅在勾选时显示） */}
+            {burnIn && (
+              <div className="space-y-3 pt-3 border-t">
+                {/* 样式预设 */}
+                <div className="space-y-2">
+                  <label className="text-xs font-medium">字幕样式</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {SUBTITLE_STYLES.map((s) => (
+                      <button
+                        key={s.value}
+                        type="button"
+                        onClick={() => setStyle(s.value)}
+                        className={`text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                          style === s.value
+                            ? "border-accent bg-accent/5"
+                            : "border-border hover:border-accent/30"
+                        }`}
+                      >
+                        <div className="font-medium">{s.label}</div>
+                        <div className="text-muted-foreground text-[10px] mt-0.5 leading-snug">
+                          {s.desc}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 烧录语言 */}
+                <div className="space-y-2">
+                  <label className="text-xs font-medium">烧录哪个语言版本</label>
+                  <Select value={burnLanguage} onValueChange={setBurnLanguage}>
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {burnLangOptions.map((lang) => (
+                        <SelectItem key={lang} value={lang} className="text-xs">
+                          {LANG_LABEL[lang] || lang}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
           </div>
 
           <Button

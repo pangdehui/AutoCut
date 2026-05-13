@@ -2,7 +2,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
-import { Loader2, LogOut, Zap } from "lucide-react";
+import { Loader2, LogOut, Zap, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Profile() {
@@ -44,6 +44,14 @@ export default function Profile() {
   return (
     <div className="min-h-screen bg-background p-4 md:p-8">
       <div className="max-w-2xl mx-auto space-y-6">
+        {/* 返回仪表板 */}
+        <Button variant="ghost" size="sm" asChild className="-ml-2">
+          <a href="/dashboard">
+            <ArrowLeft className="h-4 w-4 mr-1" />
+            返回仪表板
+          </a>
+        </Button>
+
         {/* 用户信息卡片 */}
         <Card className="border-border/50 shadow-sm">
           <CardHeader>
