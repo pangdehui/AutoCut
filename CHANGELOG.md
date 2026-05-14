@@ -1,5 +1,28 @@
 # CHANGELOG
 
+## 2026-05-14
+
+### 视频分析升级
+- 新增 **废片自动识别**：黑屏/闪白/模糊/晃动/花屏/极短片段（<0.5秒）自动标记为 `wasteSegments`
+- 代码层自动过滤：`quality=较差` 或 `duration<0.5s` 的场景直接排除，`quality=一般` 加警告标记
+- 分析字段扩展：`shotType`(景别)、`motion`(运动幅度)、`quality`(画质)、`audioGuess`(音频推测)
+
+### 剪辑管线优化
+- **素材多样性强制**：Phase 1 选片硬性数量要求（≥10个选6个，5-9个选4个）+ 代码兜底自动补足
+- Phase 2 编辑约束：同一素材最多使用3次、不得连续使用、抖动镜头限1.5秒
+- **创意总监流程**：Phase 1 产出 `creativeBrief` + `suggestedBgm`/`suggestedMute`，传给 Phase 2 剪辑师
+- **BGM 混音修复**：aloop 滤镜换为 stream_loop，Windows 更稳定
+- **全链路超时保护**：ffmpeg/ffprobe 全部加超时（5s-120s），避免挂死
+
+### 配音与字幕
+- 无配音模式字幕直接基于剪辑方案生成，无需等待音频
+- 有配音模式字幕基于 TTS Whisper 转录生成，音字同步
+- 字幕生成日志明确标注来源
+
+### 系统优化
+- editingService 新增 `sliceAndMerge`、`changeSpeed` 功能
+- 用户自定义 Phase 2/审查提示词（"15年顶级短视频剪辑大师"）
+
 ## 2026-05-13
 
 ### AI 剪辑引擎
