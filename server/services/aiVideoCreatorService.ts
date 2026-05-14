@@ -171,15 +171,27 @@ async function getAnalyzedVideos(userId: number, projectId?: number): Promise<Vi
   return rows.map((r) => {
     const meta = (r.metadata || {}) as Record<string, unknown>;
     const rawScenes = (r.sceneDescriptions || []) as any[];
-    const scenes = rawScenes.map((s: any) => ({
-      startTime: typeof s.startTime === "number" ? s.startTime : parseTs(s.timestamp || "0:00"),
-      endTime: typeof s.endTime === "number" ? s.endTime : parseTs(s.timestamp || "0:00") + 3,
-      description: s.description || "",
-      tags: s.tags || [],
-      shotType: s.shotType || "",
-      motion: s.motion || "",
-      quality: s.quality || "",
-    }));
+    const allScenes = rawScenes
+      .map((s: any) => ({
+        startTime: typeof s.startTime === "number" ? s.startTime : parseTs(s.timestamp || "0:00"),
+        endTime: typeof s.endTime === "number" ? s.endTime : parseTs(s.timestamp || "0:00") + 3,
+        description: s.description || "",
+        tags: s.tags || [],
+        shotType: s.shotType || "",
+        motion: s.motion || "",
+        quality: s.quality || "",
+      }))
+      // 过滤废片：质量"较差" 或 时长不足 0.5 秒（≈15帧）自动排除
+      .filter((s) => {
+        const dur = s.endTime - s.startTime;
+        if (s.quality === "较差") return false;
+        if (dur < 0.5) return false;
+        return true;
+      });
+    // "一般" 质量的不删除，但在描述前加警告标记
+    const scenes = allScenes.map((s) =>
+      s.quality === "一般" ? { ...s, description: `⚠️${s.description}` } : s
+    );
     return {
       id: r.id,
       fileName: r.fileName,
@@ -390,13 +402,18 @@ async function phase1Intent(
 - 目标受众是谁？他们的痛点/兴趣是什么？
 - 核心信息是什么？用一句话概括这个视频要说的最重要的事
 
-**第二步：智能选材**
+**第二步：智能选材（⚠️ 素材多样性是硬要求）**
 选材原则（按优先级）：
 1. 内容相关性：素材主题/关键词是否匹配需求
 2. 画面多样性：优先选不同场景、不同景别、不同氛围的素材，避免单调
 3. 时长充裕度：素材时长要足够剪出目标时长，宁可多选不要少选
 4. 质量优先：有"模糊/晃动/黑屏"标记的素材降低优先级
-⚠️ 警告：不要强行凑数，宁可少选精选的素材也不要选无关素材
+
+⚠️ 硬性选材数量要求：
+- 素材库有 ≥10 个相关素材 → 至少选 6 个，理想 8-10 个
+- 素材库有 5-9 个相关素材 → 至少选 4 个，理想 5-7 个
+- 素材库有 3-4 个相关素材 → 全选
+- 不要强行凑数，但也不要为了精简而砍掉有价值的素材。素材够多的情况下选太少会导致剪辑师只能反复用同一素材，视觉疲劳。
 
 **第三步：创意简报**
 给剪辑师一份可直接执行的创意简报，包含：
@@ -1270,6 +1287,19 @@ async function runAiVideoCreator(
     if (intent.selectedVideoIds.length === 0) {
       throw new Error(`AI 未找到合适的视频素材。${intent.reasoning}`);
     }
+    // 硬性兜底：素材库充足但选太少 → 自动补足
+    const totalAvailable = videoSummaries.length;
+    const selected = intent.selectedVideoIds.length;
+    const minExpected = totalAvailable >= 10 ? 5 : totalAvailable >= 5 ? 4 : Math.min(3, totalAvailable);
+    if (selected < minExpected) {
+      console.log(`[AI Creator] Phase 1 仅选 ${selected}/${totalAvailable} 个素材，自动补足至 ${minExpected}...`);
+      const allIds = new Set(intent.selectedVideoIds);
+      for (const v of videoSummaries) {
+        if (allIds.size >= minExpected) break;
+        if (!allIds.has(v.id)) allIds.add(v.id);
+      }
+      intent.selectedVideoIds = Array.from(allIds);
+    }
   }
 
   // Phase 1 的建议覆盖 autoConfig 的默认值
@@ -1475,12 +1505,15 @@ async function runAiVideoCreator(
       try {
         const merged = await mergeToSentences(whisperSegments);
         srtContent = srtFromWhisperSegments(merged);
+        console.log(`[AI Creator] 字幕: 基于 TTS Whisper 转录生成, ${merged.length} 条`);
       } catch (e) {
         console.warn("[AI Creator] 字幕合并失败，使用原始片段:", String(e));
         srtContent = srtFromWhisperSegments(whisperSegments);
       }
     } else {
+      // 无 TTS → 基于剪辑方案生成，时间轴与视频片段对齐
       srtContent = generateSrtFromClips(scriptResult.clips);
+      console.log(`[AI Creator] 字幕: 基于剪辑方案生成(无TTS), ${scriptResult.clips.length} 条`);
     }
 
     if (subtitlesBurnIn && srtContent) {
