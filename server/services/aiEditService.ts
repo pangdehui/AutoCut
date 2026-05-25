@@ -1,11 +1,12 @@
 import { getDb } from "../db";
 import { videos, videoAnalysis } from "../../drizzle/schema";
-import { eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import type { ProcessingTask } from "../../drizzle/schema";
 import { registerTaskHandler } from "./taskService";
 import { openai } from "../_core/openai";
 import { ENV } from "../_core/env";
-import { trimVideo, sliceAndMerge, changeSpeed, reverseVideo, concatVideos, concatVideosWithTransitions, adjustVolume, resizeVideo, addWatermark, outputPath, type TransitionType, type SegmentTransition } from "./editingService";
+import { trimVideo, sliceAndMerge, changeSpeed, reverseVideo, concatVideos, concatVideosWithTransitions, adjustVolume, resizeVideo, addWatermark, outputPath, getVideoDurationSec, type TransitionType, type SegmentTransition } from "./editingService";
+import { injectStyleRules, applyHardConstraints, getEditStyleLabel } from "./editStyle";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
@@ -13,6 +14,14 @@ import path from "node:path";
 
 const execAsync = promisify(exec);
 const OUTPUT_DIR = path.resolve("uploads/output");
+
+interface PreviousEditResult {
+  operation: string;
+  explanation: string;
+  slices?: Array<{ videoIndex: number; start: string; end: string }>;
+  totalDuration?: number;
+  segmentCount?: number;
+}
 
 function timeToSeconds(t: string): number {
   const parts = t.split(":").map(Number);
@@ -51,18 +60,21 @@ async function getAnalysisForVideos(videoIds: number[]): Promise<Map<number, Rec
   const results = await db
     .select()
     .from(videoAnalysis)
-    .where(inArray(videoAnalysis.videoId, videoIds));
+    .where(inArray(videoAnalysis.videoId, videoIds))
+    .orderBy(desc(videoAnalysis.createdAt));
 
   const map = new Map<number, Record<string, unknown>>();
   for (const r of results) {
     const existing = map.get(r.videoId);
     // 取最新的分析
     if (!existing) {
+      const meta = (r.metadata as Record<string, unknown>) || {};
       map.set(r.videoId, {
         scenes: r.sceneDescriptions || [],
         keywords: r.keywords || [],
         highlights: r.highlights || [],
-        metadata: r.metadata || {},
+        wasteSegments: (meta.wasteSegments as unknown[]) || [],
+        metadata: meta,
       });
     }
   }
@@ -78,7 +90,8 @@ const TRANSITION_TYPES: TransitionType[] = [
 function buildMultiVideoPrompt(
   analyses: Map<number, Record<string, unknown>>,
   videoPaths: Map<number, string>,
-  userPrompt: string
+  userPrompt: string,
+  previousResult?: PreviousEditResult
 ): string {
   let videoBlocks = "";
 
@@ -86,17 +99,28 @@ function buildMultiVideoPrompt(
   for (const [videoId, analysis] of Array.from(analyses.entries())) {
     const scenes = (analysis.scenes as any[]) || [];
     const highlights = (analysis.highlights as any[]) || [];
+    const wasteSegments = (analysis.wasteSegments as any[]) || [];
     const keywords = (analysis.keywords as string[]) || [];
     const metadata = (analysis.metadata as Record<string, any>) || {};
     const name = path.basename(videoPaths.get(videoId) || `video_${videoId}`);
 
-    const scenesText = scenes.map((s, i) =>
-      `    ${i + 1}. [${s.timestamp}] ${s.description}`
-    ).join("\n");
+    const scenesText = scenes.map((s, i) => {
+      const start = secondsToTime(typeof s.startTime === "number" ? s.startTime : timeToSeconds(s.timestamp || "00:00:00"));
+      const end = secondsToTime(typeof s.endTime === "number" ? s.endTime : timeToSeconds(s.timestamp || "00:00:00") + 3);
+      return `    ${i + 1}. [${start}-${end}] [${s.quality || "可用"}] ${s.description}`;
+    }).join("\n");
 
-    const highlightsText = highlights.map((h, i) =>
-      `    ${i + 1}. [${h.timestamp}] 评分${h.score}/10: ${h.description}`
-    ).join("\n");
+    const highlightsText = highlights.map((h, i) => {
+      const start = secondsToTime(typeof h.startTime === "number" ? h.startTime : timeToSeconds(h.timestamp || "00:00:00"));
+      const end = secondsToTime(typeof h.endTime === "number" ? h.endTime : timeToSeconds(h.timestamp || "00:00:00") + 2);
+      return `    ${i + 1}. [${start}-${end}] 评分${h.score}/10: ${h.description}`;
+    }).join("\n");
+
+    const wasteText = wasteSegments.map((w, i) => {
+      const start = secondsToTime(typeof w.startTime === "number" ? w.startTime : 0);
+      const end = secondsToTime(typeof w.endTime === "number" ? w.endTime : 0);
+      return `    ${i + 1}. [${start}-${end}] ${w.description} (${w.type})`;
+    }).join("\n");
 
     videoBlocks += `
 ### 视频${idx}: ${name}
@@ -107,43 +131,111 @@ function buildMultiVideoPrompt(
 ${scenesText || "    无"}
 - 精彩片段:
 ${highlightsText || "    无"}
+- 废片（必须跳过，不得出现在输出中，含重复帧）:
+${wasteText || "    无废片"}
 `;
     idx++;
   }
 
-  return `你是一个专业的视频剪辑助手。现在有多个视频需要跨视频剪辑。根据每个视频的分析结果和用户的剪辑需求，生成精确的剪辑操作指令。
+  const prevCtx = previousResult
+    ? `
+## Previous Edit Result (for iterative refinement)
+- Operation: ${previousResult.operation}
+- Previous explanation: ${previousResult.explanation}
+${previousResult.segmentCount != null ? `- Segment count: ${previousResult.segmentCount}` : ""}
+${previousResult.totalDuration != null ? `- Total duration: ${previousResult.totalDuration.toFixed(1)}s` : ""}
+${
+  previousResult.slices && previousResult.slices.length > 0
+    ? `- Previous segments:\n${previousResult.slices.map((s, i) => `    ${i + 1}. Video${s.videoIndex} [${s.start}-${s.end}]`).join("\n")}`
+    : ""
+}
+The user's current instruction is a refinement of the previous result. Modify based on the previous output (e.g. "too long" → fewer/shorter segments, "change the opening" → replace first segment with a different hook, "faster pace" → more cut transitions + shorter segment durations).
+`
+    : "";
 
-## 视频分析结果
+  return `You are a professional short-video editor skilled in TikTok/Douyin/Reels viral editing. Based on video analysis results and the user's request, generate precise editing instructions.
+
+## Core Editing Principles
+
+### 1. Clip Selection Scoring
+For each candidate clip, mentally score it across 3 dimensions (each 1–5):
+- **Information value**: Does this shot communicate something essential? (5 = key message, 1 = filler)
+- **Visual impact**: Is it visually arresting? (5 = stunning, 1 = flat/unremarkable)
+- **Emotional pull**: Does it make the viewer feel something? (5 = strong emotion, 1 = neutral)
+
+Select clips that score ≥10 combined. Reject anything below 7.
+
+Quality tier selection:
+- "优质"(premium): Prioritize for hooks, climaxes, money shots — crisp, stable, well-composed
+- "可用"(usable): Use for context, transitions, B-roll support — acceptable but not show-stopping
+- "一般"(average): Only use if absolutely necessary, max 2 clips, keep under 2s each
+- wasteSegments: ZERO tolerance — skip entirely, not a single frame
+
+Highlights vs scenes: prefer highlights (AI has already identified these as standout moments). Use regular scenes to fill gaps between highlights.
+
+### 2. Segment Architecture
+**Hook (first 1–3 segments)**: The most visually arresting or emotionally magnetic clips. First segment must grab attention within 0.5s — no slow build-ups. Duration: 1.0–2.5s each.
+
+**Body (middle 60–70% of segments)**:
+- Mix clip durations to create rhythm: short-short-LONG-short-short-LONG
+- Alternate between information-heavy clips and visual palate-cleansers
+- Include at least one detail/close-up shot for every 4 clips
+- Vary source videos — never 3 clips from the same source in a row
+
+**Climax (peak moment, ~70–85% position)**: The single best clip — highest highlight score, longest allowed duration (3–6s), the emotional or informational peak.
+
+**Resolution (final 1–2 segments)**: Clean landing — CTA, emotional closure, or summary. 2–3s. Don't end abruptly mid-thought.
+
+### 3. Duration Calculator
+- Target not specified → default 30–60s total
+- User specifies "X seconds" → total must be X ±5% (e.g. "60s" → 57–63s)
+- Per-segment guardrails:
+  · Hook: 1.0–2.5s | Fast info: 1.5–3.0s | Standard: 2.5–4.0s | Slow/emotional: 3.5–6.0s
+  · Never exceed 8s for any single segment
+- Segment count formula: targetDuration / 3.5 → aim for this many clips (±20%)
+
+### 4. Visual Continuity Rules
+- Never place two extreme close-ups back-to-back
+- Never place two wide shots back-to-back without a detail shot between
+- When switching source videos, the first clip from the new source should establish context
+- Alternate motion intensity: static → moving → static → moving
+- Consecutive clips from the same source video MUST use "cut" transition (not a fancy transition)
+
+### 5. Transition Selection Guide
+Default: "cut" (>60% of transitions). Only use others when justified:
+- **cut**: Same-topic flow, fast-paced sequences, consecutive same-source clips. (no duration needed)
+- **dissolve** (0.2–0.3s): Smooth topic shift within same section, visual mood continuity
+- **fade** (0.3–0.5s): Gentle section transition, time passing
+- **fadeblack** (0.4–0.6s): Major section break, emotional reset, before/after contrast (max 2 per video)
+- **slideleft/slideright** (0.25–0.4s): Energetic montage, youthful/trendy content
+- **zoomin** (0.2–0.3s): Product reveal, emphasis moment, "wow" beat
+- Never use the same non-cut transition twice consecutively
+
+### 6. Emotional Arc Ordering
+Do NOT arrange clips in raw chronological order. Arrange them by emotional/intensity curve:
+Hook (peak intensity) → Brief drop → Build → Build → CLIMAX → Cool-down → Resolution
+
+Within the body section, group clips by theme or visual mood rather than by source video.
+
+## Video Analysis Results
 ${videoBlocks}
-
-## 用户剪辑需求
+${prevCtx}
+## User Editing Request
 ${userPrompt}
 
-## 输出要求
-根据各视频的场景和精彩片段的时间信息，把用户需求转化为精确的剪辑指令。
-时间格式使用 HH:MM:SS（如 00:01:30 表示1分30秒）。
-对于跨视频剪辑，每个片段需要指定来源视频编号（sourceVideo: 1, 2, 3...对应上面的视频1、视频2、视频3）。
+## Output
+Time format: HH:MM:SS. Cross-video clips must specify videoIndex (1-based: 1=Video 1, 2=Video 2...).
+When generating slices, verify NO overlap with wasteSegments above.
+If user request implies mute/remove audio, set "mute": true.
 
-## 转场（仅 slice / concat 操作适用）
-- 可选类型：${TRANSITION_TYPES.join(", ")}
-- slice 数组中每个元素的 transition 表示「从上一个 slice 切到此 slice」时的转场，第一个 slice 的 transition 会被忽略
-- concat.transitions 数组长度 = videoOrder 长度 - 1，表示每个视频拼接边界的转场
-- transitionDuration 默认 0.4 秒，范围 0.2-1.0
-- 节奏建议：
-  · 高频快节奏（钩子段、高能段）：cut 或 zoomin、slideleft（0.2-0.3s），制造冲击力
-  · 平铺直叙（讲解、过渡句）：fade 或 dissolve（0.3-0.5s），自然不打断
-  · 段落切换（话题切换、情绪转折）：fadeblack 或 fadewhite（0.4-0.6s），形成"分章节"感
-  · 同一场景的两个不同机位：用 dissolve（0.3s）显得自然
-  · 同一个 sourceVideo 紧邻片段优先用 cut
-- 不要全用同一种转场，节奏感来自变化；但也不要每段都换，过度炫技反而廉价
-
-只返回 JSON，不要其他文字：
+Return ONLY valid JSON:
 
 {
-  "operation": "trim" | "slice" | "concat" | "speed" | "reverse" | "resize" | "watermark" | "volume",
-  "explanation": "向用户解释你将如何剪辑（中文）",
+  "operation": "trim" | "slice" | "concat" | "speed" | "reverse" | "resize" | "watermark" | "volume" | "clean",
+  "explanation": "Chinese explanation of your editing decisions — clip selection strategy, arc design, transition choices",
   "params": {
     "mute": false,
+    "videoIndex": 1,
     "trim": { "videoIndex": 1, "startTime": "00:00:30", "endTime": "00:02:15" },
     "slices": [
       { "videoIndex": 1, "start": "00:00:10", "end": "00:00:30" },
@@ -153,22 +245,17 @@ ${userPrompt}
     "speed": 1.5,
     "reverse": { "videoIndex": 1 },
     "resize": { "videoIndex": 1, "resolution": "1280:720" },
-    "watermark": { "videoIndex": 1, "text": "文字内容", "position": "bottom-right" },
+    "watermark": { "videoIndex": 1, "text": "text", "position": "bottom-right" },
     "volume": { "videoIndex": 1, "level": 0.5 }
   }
 }
 
-操作说明：
-- trim: 裁剪指定时间段
-- slice: 从视频中提取多个片段并合并（可跨视频，可带转场）
-- concat: 将多个视频完整拼接在一起（按 videoOrder 顺序，可带转场）
-- speed: 加速/减速（0.5=半速, 1.0=原速, 2.0=两倍速）
-- reverse: 倒放视频
-- resize: 调整分辨率（1920:1080/1280:720/640:360）
-- watermark: 添加文字水印（position: top-left/top-right/bottom-left/bottom-right/center）
-- volume: 调整音量（0.0=静音, 0.5=一半, 1.0=原音量, 2.0=两倍）
-
-注意：如果用户要求静音/去声音/不要音频，设置 "mute": true。`;
+Operations:
+- slice: Extract segments from one or more videos and merge with transitions. This is the DEFAULT for any multi-clip request.
+- clean: Auto-remove all waste segments and merge remaining usable clips. Use when user asks to remove waste/trash segments.
+- trim: Cut a single time range from one video.
+- concat: Merge full videos end-to-end (with optional transitions).
+- speed/volume/reverse/resize/watermark: Single-video adjustments.`;
 }
 
 interface EditSlice {
@@ -182,9 +269,34 @@ interface EditSlice {
 }
 
 interface EditPlan {
-  operation: "trim" | "slice" | "concat" | "speed" | "reverse" | "resize" | "watermark" | "volume";
+  operation: "trim" | "slice" | "concat" | "speed" | "reverse" | "resize" | "watermark" | "volume" | "clean";
   explanation: string;
   params: Record<string, unknown>;
+}
+
+function buildCleanSlices(
+  wasteSegs: Array<{ startTime: number; endTime: number }>,
+  totalDuration: number
+): Array<{ start: string; end: string }> {
+  const MIN_SLICE = 0.5;
+  const sorted = [...wasteSegs].sort((a, b) => a.startTime - b.startTime);
+  const slices: Array<{ start: string; end: string }> = [];
+  let cursor = 0;
+
+  for (const w of sorted) {
+    const wasteStart = Math.max(0, w.startTime);
+    const wasteEnd = Math.min(totalDuration, w.endTime);
+    if (wasteStart > cursor + MIN_SLICE) {
+      slices.push({ start: secondsToTime(cursor), end: secondsToTime(wasteStart) });
+    }
+    cursor = Math.max(cursor, wasteEnd);
+  }
+
+  if (totalDuration - cursor > MIN_SLICE) {
+    slices.push({ start: secondsToTime(cursor), end: secondsToTime(totalDuration) });
+  }
+
+  return slices;
 }
 
 async function runAiEdit(
@@ -193,7 +305,13 @@ async function runAiEdit(
 ): Promise<Record<string, unknown>> {
   await updateProgress(5);
 
-  const params = (task.parameters || {}) as { prompt?: string; videoIds?: number[] };
+  const params = (task.parameters || {}) as {
+    prompt?: string;
+    videoIds?: number[];
+    previousResult?: PreviousEditResult;
+    style?: string;
+  };
+  const editStyle = params.style;
   if (!params.prompt) {
     throw new Error("请提供剪辑指令");
   }
@@ -233,13 +351,16 @@ async function runAiEdit(
 
   // 发送给 AI 生成编辑计划
   let editPlan: EditPlan;
+  let styleModified = false;
+  let styleConstraints: string[] = [];
   try {
-    const promptText = buildMultiVideoPrompt(analysisMap, videoPathMap, params.prompt);
+    let promptText = buildMultiVideoPrompt(analysisMap, videoPathMap, params.prompt, params.previousResult);
+    promptText = injectStyleRules(promptText, editStyle);
 
     const result = await openai.chat.completions.create({
       model: ENV.openaiChatModel,
       messages: [{ role: "user", content: promptText }],
-      max_tokens: 1500,
+      max_tokens: 2500,
     });
 
     const content = result.choices[0]?.message?.content;
@@ -253,6 +374,28 @@ async function runAiEdit(
     if (!editPlan.operation || !editPlan.params) {
       throw new Error("AI 返回的编辑计划格式不完整");
     }
+    console.log(`[aiEdit] 操作=${editPlan.operation} 说明=${editPlan.explanation}`);
+    if (editPlan.operation === "slice") {
+      const slices = (editPlan.params.slices as any[]) || [];
+      console.log(`[aiEdit] 切片数=${slices.length} 总时长≈${slices.reduce((acc: number, s: any) => {
+        const dur = timeToSeconds(s.end || "00:00:00") - timeToSeconds(s.start || "00:00:00");
+        return acc + (dur > 0 ? dur : 0);
+      }, 0).toFixed(1)}s`);
+      for (const s of slices) {
+        console.log(`  -> 视频${s.videoIndex||1} [${s.start}-${s.end}] 转场=${s.transition||"cut"}`);
+      }
+    }
+
+    // 风格模板后处理：执行硬约束
+    const hc = applyHardConstraints(editPlan, editStyle);
+    styleModified = hc.modified;
+    styleConstraints = hc.constraints;
+    if (styleModified) {
+      console.log(`[aiEdit] 风格约束已应用 (${styleConstraints.length} 条):`);
+      for (const c of styleConstraints) {
+        console.log(`  - ${c}`);
+      }
+    }
   } catch (error) {
     throw new Error(`AI 编辑计划生成失败: ${String(error)}`);
   }
@@ -261,7 +404,7 @@ async function runAiEdit(
 
   const output = outputPath(task.id, editPlan.operation);
   const { operation, params: editParams, explanation } = editPlan;
-  const idList = [...validVideoIds]; // 保持索引顺序
+  const idList = [...validVideoIds];
 
   try {
     switch (operation) {
@@ -367,6 +510,25 @@ async function runAiEdit(
         await adjustVolume(srcPath, output, vol.level);
         break;
       }
+      case "clean": {
+        const cleanIdx = ((editParams.videoIndex as number) || 1) - 1;
+        const srcVideoId = idList[Math.min(cleanIdx, idList.length - 1)];
+        const srcPath = videoPathMap.get(srcVideoId);
+        if (!srcPath) throw new Error("源视频不存在");
+        const wasteSegs = ((analysisMap.get(srcVideoId) as any)?.wasteSegments || []) as Array<{ startTime: number; endTime: number }>;
+        const duration = await getVideoDurationSec(srcPath);
+        const cleanSlices = buildCleanSlices(wasteSegs, duration);
+        if (cleanSlices.length === 0) {
+          throw new Error("清理后没有可用片段");
+        }
+        if (cleanSlices.length === 1 && timeToSeconds(cleanSlices[0].start) < 0.5 && Math.abs(timeToSeconds(cleanSlices[0].end) - duration) < 1) {
+          fs.copyFileSync(srcPath, output);
+        } else {
+          await sliceAndMerge(srcPath, output, cleanSlices);
+        }
+        editPlan.explanation = editPlan.explanation || `已识别 ${wasteSegs.length} 处废片，清理后保留 ${cleanSlices.length} 个可用片段`;
+        break;
+      }
       default:
         throw new Error(`不支持的编辑操作: ${operation}`);
     }
@@ -414,7 +576,29 @@ async function runAiEdit(
     operation,
     explanation,
     message: explanation || `${operation} 处理完成`,
+    editStyle: editStyle || "auto",
+    editStyleLabel: getEditStyleLabel(editStyle),
+    styleConstraints: styleModified ? styleConstraints : undefined,
     transitions: usedTransitions.length > 0 ? usedTransitions : undefined,
+    previousResult: {
+      operation,
+      explanation: explanation || `${operation} 处理完成`,
+      slices: operation === "slice"
+        ? (editParams.slices as EditSlice[] || []).map((s) => ({
+            videoIndex: s.videoIndex || 1,
+            start: s.start,
+            end: s.end,
+          }))
+        : undefined,
+      segmentCount: operation === "slice"
+        ? (editParams.slices as EditSlice[] || []).length
+        : undefined,
+      totalDuration: operation === "slice"
+        ? (editParams.slices as EditSlice[] || []).reduce((acc, s) => {
+            return acc + timeToSeconds(s.end) - timeToSeconds(s.start);
+          }, 0)
+        : undefined,
+    } satisfies PreviousEditResult,
   };
 }
 

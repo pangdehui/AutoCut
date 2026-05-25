@@ -13,11 +13,12 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { AIChatBox, type Message } from "@/components/AIChatBox";
+import AnalysisViewer from "./AnalysisViewer";
 import VideoPlayer from "@/components/VideoPlayer";
 import VoicePicker from "@/components/VoicePicker";
 import BgmPlayer from "@/components/BgmPlayer";
 import {
-  Loader2, Play, Trash2, FileVideo, Upload, CheckCircle2, AlertCircle, Clock,
+  Loader2, Play, Trash2, FileVideo, Upload, CheckCircle2, AlertCircle, AlertTriangle, Clock,
   CheckSquare, Square, Sparkles, Wand2, Download, RefreshCw, Film,
   Volume2, Subtitles, Scissors, X, AtSign, Music,
 } from "lucide-react";
@@ -49,6 +50,12 @@ const BGM_MOOD_LABELS: Record<string, string> = {
   upbeat: "活力", calm: "舒缓", dramatic: "戏剧", warm: "温情",
   energetic: "动感", cinematic: "电影感", none: "无",
 };
+const EDIT_STYLE_LABELS: Record<string, string> = {
+  auto: "智能自动",
+  ecommerce_matrix: "电商带货",
+  knowledge_talk: "知识口播",
+  emotional_story: "情感叙事",
+};
 
 type ChatResult = {
   phase?: string;           // "review" | "done"
@@ -67,6 +74,8 @@ type ChatResult = {
   bgmApplied?: boolean;
   autoMode?: boolean;
   autoReasoning?: string | null;
+  editStyle?: string;
+  styleConstraints?: string[];
   // 审查相关
   review?: {
     score: number;
@@ -92,17 +101,24 @@ const WELCOME = `你好！这里是 **项目工作台**。
 
 直接告诉我你想要什么样的视频，AI 会从右侧素材库中挑选片段、写脚本、配音并剪辑合成。
 
-**也可以使用斜杠命令精确分发**：
-- \`/剪辑 ...\` — 用选中的视频做精确剪辑（ai_edit）
+**斜杠命令（精确分发）**：
+- \`/剪辑 ...\` — AI 按短视频风格剪辑，默认生成 30–60s 爆款版
+- \`/清理废片\` — 自动识别并删除黑屏、闪白、模糊等废片
 - \`/字幕 ...\` — 给选中视频生成字幕
 - \`/配音 文案\` — 用 AI 配音生成语音
 
-右侧 **参数** 标签可调整音色、语速、画幅、BGM 等；勾选素材后命令会作用于这些素材。`;
+**剪辑完成后可以继续说**（AI 会基于上次结果修改）：
+- "太长了，缩短到30秒"
+- "换个更抓眼的开头"
+- "节奏再快一点"
+
+右侧 **分析** 标签可查看每个素材的逐帧场景、精彩片段和废片识别结果。`;
 
 type SlashCmd = "ai_video_creator" | "ai_edit" | "tts" | "subtitle";
 
 function parseSlash(input: string): { cmd: SlashCmd; rest: string } {
   const t = input.trim();
+  if (/^\/(清理废片|clean)(\s|$)/i.test(t)) return { cmd: "ai_edit", rest: "帮我清理这段视频中所有的废片，包括黑屏、闪白、模糊和抖动片段，使用 clean 操作" };
   if (/^\/(剪辑|edit)(\s|$)/i.test(t)) return { cmd: "ai_edit", rest: t.replace(/^\/(剪辑|edit)\s*/i, "") };
   if (/^\/(字幕|sub)(\s|$)/i.test(t))  return { cmd: "subtitle", rest: t.replace(/^\/(字幕|sub)\s*/i, "") };
   if (/^\/(配音|tts)(\s|$)/i.test(t))  return { cmd: "tts", rest: t.replace(/^\/(配音|tts)\s*/i, "") };
@@ -119,6 +135,8 @@ function inferIntent(raw: string, hasSelectedVideos: boolean): SlashCmd {
   if (/字幕/.test(t) && !/(?:做|创作|生成|制作|合成|剪).{0,4}(?:视频|一个|一段|个)|(?:视频|片子).{0,2}(?:做|创作|制作|生成)/.test(t)) return "subtitle";
   // 配音：给XX配音 / 朗读 / TTS
   if (/(?:配音|朗读|tts)/i.test(t) && !/(?:视频|创作|剪辑|合成|制作)/.test(t)) return "tts";
+  // 废片清理
+  if (/(?:废片|黑屏|闪白|清理|去掉|删除|去除).{0,6}(?:废片|黑屏|闪白|垃圾帧|坏帧)|(?:清理|去除|删除).{0,3}(?:废片|垃圾)/.test(t)) return "ai_edit";
   // 剪辑：剪切 / 裁剪 / 拼接
   if (/(?:剪辑|剪切|裁剪|拼接|trim|cut)/i.test(t) && !/(?:字幕|配音|创作)/.test(t)) return "ai_edit";
   return "ai_video_creator";
@@ -143,6 +161,8 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
   const [result, setResult] = useState<ChatResult | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const lastPromptRef = useRef("");
+  const lastCmdRef = useRef<SlashCmd | null>(null);
+  const lastEditResultRef = useRef<Record<string, unknown> | null>(null);
 
   // ============ 创作参数 ============
   const [autoMode, setAutoMode] = useState(true);
@@ -153,6 +173,7 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
   const [noAudio, setNoAudio] = useState(false);
   const [overrideAspect, setOverrideAspect] = useState<string>("");
   const [overrideBgmMood, setOverrideBgmMood] = useState<string>("");
+  const [editStyle, setEditStyle] = useState<string>("auto");
 
   // 字幕样式细粒度配置（覆盖预设）
   const [subtitleStylePreset, setSubtitleStylePreset] = useState<string>("default");
@@ -295,7 +316,12 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
           bgmApplied: !!r.bgmApplied,
           autoMode: !!r.autoMode,
           autoReasoning: r.autoReasoning ?? null,
+          editStyle: r.editStyle,
         };
+        // 保存 ai_edit 的上次结果，供下次迭代修改使用
+        if (lastCmdRef.current === "ai_edit" && r.previousResult) {
+          lastEditResultRef.current = r.previousResult;
+        }
         setResult(next);
         setIsProcessing(false);
         const doneOutputPath = outputPath;
@@ -305,7 +331,7 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
           ...prev,
           {
             role: "assistant",
-            content: `✅ **已完成：${next.title}**\n\n${next.explanation}${doneOutputPath ? "" : "\n\n详见右侧「产物」标签"}`,
+            content: `✅ **已完成：${next.title}**\n\n${next.explanation}${doneOutputPath ? "" : "\n\n详见右侧「产物」标签"}${lastCmdRef.current === "ai_edit" ? "\n\n💬 **可以继续调整**：直接说「太长了」「换个开头」「节奏再快点」等，AI 会基于这次结果修改。" : ""}`,
             actions: doneOutputPath ? (
               <>
                 <Button size="sm" onClick={() => setPlayer({
@@ -441,9 +467,15 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
       const inferred = inferIntent(raw, selectedVideoIds.size > 0);
       if (inferred !== "ai_video_creator") {
         cmd = inferred;
-        rest = raw; // 保留原文用于 ai_edit/subtitle 的 prompt 参数
+        rest = raw;
       }
     }
+
+    // 切换到非 ai_edit 命令时清除上次剪辑结果
+    if (cmd !== "ai_edit") {
+      lastEditResultRef.current = null;
+    }
+    lastCmdRef.current = cmd;
 
     try {
       setIsProcessing(true);
@@ -452,10 +484,19 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
         const ids = targetIds.length > 0 ? targetIds : analyzedVideoIds;
         if (ids.length === 0) throw new Error("没有可剪辑的素材，请先上传并完成分析");
         if (!rest) throw new Error("请在 /剪辑 后描述你想怎么剪");
+        const editParams: Record<string, unknown> = {
+          prompt: rest,
+          videoIds: ids,
+          projectId,
+          style: editStyle !== "auto" ? editStyle : undefined,
+        };
+        if (lastEditResultRef.current) {
+          editParams.previousResult = lastEditResultRef.current;
+        }
         const res = await createTaskMutation.mutateAsync({
           videoId: ids[0],
           taskType: "ai_edit",
-          parameters: { prompt: rest, videoIds: ids, projectId },
+          parameters: editParams,
         });
         if (!res.success || !res.data) throw new Error(res.message || "创建失败");
         setCreatedTaskId(res.data.id);
@@ -497,16 +538,26 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
         setCreatedTaskId(res.data.id);
       } else {
         // ai_video_creator（默认）
+        // 即使 autoMode，也从 prompt 里解析用户显式意图并强制传给后端
+        const promptLower = rest.toLowerCase();
+        const promptNoAudio = /不要配音|不配音|纯字幕|无配音|只要字幕|静音版|no.?audio/i.test(rest);
+        const promptWantSub = /字幕|subtitle/i.test(rest);
+        const promptMuteOrig = /原视频静音|原声静音|背景音静音|原音静音|原视频音量.{0,4}(最小|关掉|去掉|调小)/i.test(rest);
+
         const subtitleCfg = buildSubtitleConfig();
         const baseParams: Record<string, unknown> = {
           prompt: rest,
           projectId,
           autoMode,
-          // 字幕样式细节（字体/字号/颜色等）始终生效,即使 autoMode 也能覆盖
           subtitleStyle: subtitleStylePreset,
           ...(subtitleCfg ? { subtitleConfig: subtitleCfg } : {}),
           ...(autoMode
-            ? {}
+            ? {
+                // autoMode 下把用户显式意图强制带上
+                ...(promptNoAudio ? { noAudio: true } : {}),
+                ...(promptMuteOrig ? { muteOriginalOverride: true } : {}),
+                ...((promptWantSub || promptNoAudio) ? { subtitles: { enabled: true, burnIn: true } } : {}),
+              }
             : {
                 voiceId,
                 speed,
@@ -654,13 +705,13 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
               messages={messages}
               onSendMessage={handleSend}
               isLoading={isProcessing}
-              placeholder="描述视频；用 /剪辑 /字幕 /配音 分发；用 @ 选择素材..."
+              placeholder="描述视频需求；用 /剪辑 /字幕 /配音 精准操作；用 @ 指定素材..."
               height="100%"
               suggestedPrompts={[
-                "做一个 30 秒抖音美食探店视频",
-                "/剪辑 把开场和精彩片段拼起来",
+                "/剪辑 做一个30秒抖音风格高能精华版，开场要抓眼球",
+                "/剪辑 提取所有精彩片段拼成60秒高光版",
+                "/清理废片",
                 "/字幕 自动识别并烧录到画面上",
-                "/配音 欢迎来到我的频道",
               ]}
               mentionItems={videos.map((v) => ({
                 id: v.id,
@@ -697,8 +748,9 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
       {/* 右:Tabs */}
       <div className="w-[420px] shrink-0 flex flex-col">
         <Tabs defaultValue="materials" className="flex-1 flex flex-col min-h-0">
-          <TabsList className="grid grid-cols-4 w-full">
+          <TabsList className="grid grid-cols-5 w-full">
             <TabsTrigger value="materials" className="text-xs">素材</TabsTrigger>
+            <TabsTrigger value="analysis" className="text-xs">分析</TabsTrigger>
             <TabsTrigger value="params" className="text-xs">参数</TabsTrigger>
             <TabsTrigger value="outputs" className="text-xs">产物</TabsTrigger>
             <TabsTrigger value="tasks" className="text-xs">任务</TabsTrigger>
@@ -822,6 +874,17 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
             </Card>
           </TabsContent>
 
+          <TabsContent value="analysis" className="flex-1 min-h-0 mt-3">
+            <AnalysisTab
+              videos={videos}
+              selectedVideoIds={selectedVideoIds}
+              onClean={(id) => {
+                setSelectedVideoIds(new Set([id]));
+                handleSend("/清理废片");
+              }}
+            />
+          </TabsContent>
+
           <TabsContent value="params" className="flex-1 min-h-0 mt-3">
             <Card className="h-full">
               <ScrollArea className="h-full">
@@ -866,6 +929,32 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
                         <SelectItem value="none" className="text-xs">无 BGM</SelectItem>
                       </SelectContent>
                     </Select>
+                  </div>
+
+                  {/* 剪辑风格（仅用于 /剪辑 命令） */}
+                  <div className="space-y-2 pt-2 border-t">
+                    <Label className="text-xs flex items-center gap-1">
+                      <Scissors className="h-3 w-3" />剪辑风格
+                      <span className="text-[10px] font-normal text-muted-foreground ml-1">
+                        （/剪辑 命令）
+                      </span>
+                    </Label>
+                    <Select value={editStyle} onValueChange={setEditStyle}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="选择剪辑风格" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto" className="text-xs">智能自动（AI 决定）</SelectItem>
+                        <SelectItem value="ecommerce_matrix" className="text-xs">电商带货 — 快节奏高频切</SelectItem>
+                        <SelectItem value="knowledge_talk" className="text-xs">知识口播 — 开篇推近强调</SelectItem>
+                        <SelectItem value="emotional_story" className="text-xs">情感叙事 — 慢节奏柔转场</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {editStyle && editStyle !== "auto" && (
+                      <p className="text-[10px] text-muted-foreground leading-snug mt-1 px-1">
+                        {editStyle === "ecommerce_matrix" ? "单切片 ≤6s，>70% 硬切，总时长 25-40s，适合带货直播切片" :
+                         editStyle === "knowledge_talk" ? "首段 zoomin 强调，dissolve 转场为主，总时长 40-90s，适合教程科普" :
+                         editStyle === "emotional_story" ? "单切片最长 10s，>40% dissolve，总时长 45-90s，适合 Vlog 故事" : ""}
+                      </p>
+                    )}
                   </div>
 
                   {/* BGM 试听 */}
@@ -1188,6 +1277,11 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
                               BGM:{BGM_MOOD_LABELS[result.bgmMood] || result.bgmMood}
                             </Badge>
                           )}
+                          {result.editStyle && result.editStyle !== "auto" && (
+                            <Badge variant="outline" className="text-[10px]">
+                              风格：{EDIT_STYLE_LABELS[result.editStyle] || result.editStyle}
+                            </Badge>
+                          )}
                         </div>
                       )}
 
@@ -1234,11 +1328,30 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
                         </div>
                       )}
 
-                      <Button size="sm" variant="ghost" className="w-full text-xs"
-                              onClick={() => handleSend(lastPromptRef.current)}
-                              disabled={isProcessing || !lastPromptRef.current}>
-                        <RefreshCw className="h-3 w-3 mr-1" />重新生成
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="ghost" className="flex-1 text-xs"
+                                onClick={() => { lastEditResultRef.current = null; handleSend(lastPromptRef.current); }}
+                                disabled={isProcessing || !lastPromptRef.current}>
+                          <RefreshCw className="h-3 w-3 mr-1" />重新生成
+                        </Button>
+                      </div>
+                      {lastEditResultRef.current && (
+                        <div className="space-y-1.5 pt-2 border-t">
+                          <p className="text-[10px] text-muted-foreground">💬 基于上次结果继续调整：</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {["太长了，缩短到30秒", "换个更抓眼的开头", "节奏再快一点", "减少片段数量"].map((hint) => (
+                              <button
+                                key={hint}
+                                disabled={isProcessing}
+                                onClick={() => handleSend(`/剪辑 ${hint}`)}
+                                className="text-[10px] px-2 py-1 rounded-md border border-accent/40 text-accent hover:bg-accent/10 disabled:opacity-40 transition-colors"
+                              >
+                                {hint}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                     )
                   ) : errorMsg ? (
@@ -1365,6 +1478,89 @@ function TaskRow({ task, onPreview }: {
         </div>
       )}
     </div>
+  );
+}
+
+function AnalysisTab({
+  videos,
+  selectedVideoIds,
+  onClean,
+}: {
+  videos: any[];
+  selectedVideoIds: Set<number>;
+  onClean: (id: number) => void;
+}) {
+  const analyzed = videos.filter((v) => v.analysisStatus === "completed");
+  const defaultId = selectedVideoIds.size === 1
+    ? Array.from(selectedVideoIds)[0]
+    : analyzed[0]?.id ?? null;
+
+  const [activeId, setActiveId] = useState<number | null>(defaultId);
+
+  // 如果选中恰好1个已分析视频，自动切到那个视频
+  const singleSelected = selectedVideoIds.size === 1 ? Array.from(selectedVideoIds)[0] : null;
+  const singleAnalyzed = singleSelected && analyzed.some((v) => v.id === singleSelected);
+
+  const viewId = singleAnalyzed ? singleSelected! : (activeId ?? analyzed[0]?.id ?? null);
+
+  if (analyzed.length === 0) {
+    return (
+      <Card className="h-full flex items-center justify-center">
+        <div className="text-center py-12 text-muted-foreground px-6">
+          <Film className="h-12 w-12 mx-auto mb-3 opacity-20" />
+          <p className="text-sm">暂无已分析素材</p>
+          <p className="text-xs mt-1">上传视频后点击「分析」即可查看逐帧场景、精彩片段和废片识别结果</p>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="h-full flex flex-col">
+      <div className="p-3 border-b shrink-0 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium">选择素材查看分析</span>
+          {viewId && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-[10px] text-red-600 border-red-300 hover:bg-red-50"
+              onClick={() => onClean(viewId)}
+            >
+              <AlertTriangle className="h-3 w-3 mr-1" />一键清理废片
+            </Button>
+          )}
+        </div>
+        <div className="flex gap-1 flex-wrap">
+          {analyzed.map((v) => (
+            <button
+              key={v.id}
+              onClick={() => setActiveId(v.id)}
+              className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] transition-colors ${
+                viewId === v.id ? "bg-accent/10 border-accent text-accent" : "border-border hover:bg-muted/50"
+              }`}
+            >
+              <img
+                src={`/api/videos/thumbnail/${v.id}`}
+                alt=""
+                className="h-4 w-6 object-cover rounded-sm"
+                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+              />
+              <span className="max-w-[80px] truncate">{v.originalName}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <ScrollArea className="flex-1">
+        <div className="p-3">
+          {viewId ? (
+            <AnalysisViewer videoId={viewId} />
+          ) : (
+            <div className="text-center py-8 text-xs text-muted-foreground">选择上方素材查看分析</div>
+          )}
+        </div>
+      </ScrollArea>
+    </Card>
   );
 }
 
