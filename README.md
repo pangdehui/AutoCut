@@ -50,7 +50,16 @@ AutoCut 是我第一个认真尝试的开源项目。最开始的想法很简单
 - **字幕压制**：可选将字幕烧录到视频画面中
 - **降级处理**：ASR 不可用时自动切换模拟字幕
 
-### ✂️ FFmpeg 视频剪辑
+### ✂️ AI 智能剪辑
+- **自然语言剪辑**：直接说"剪个抖音带货视频"，AI 自动理解意图并生成剪辑方案
+- **3 种剪辑风格模板**：
+  - **电商带货**：快节奏高频切（≤6s/段），紧迫感转场，适合直播切片和商品展示
+  - **知识口播**：首段推近强调，干净专业转场，适合教程和知识科普
+  - **情感叙事**：慢节奏柔转场（>40% dissolve），留白感，适合 Vlog/故事
+- **双重约束**：Prompt 引导 + 代码层硬约束兜底，确保输出符合预期
+- **废片自动过滤**：AI 剪辑时自动跳过黑屏/闪白/模糊等废片段落
+
+### ✂️ FFmpeg 手动编辑
 - **裁剪**：去除片头片尾，精确到秒级时间戳
 - **切片合并**：剪切多个片段并拼接，支持任意段数
 - **分辨率调整**：缩放至 1080p / 720p / 360p
@@ -59,9 +68,10 @@ AutoCut 是我第一个认真尝试的开源项目。最开始的想法很简单
 
 ### 🤖 AI 视频分析
 - **智能抽帧**：FFmpeg 自动从视频中提取 6 个关键帧，均匀分布
-- **多模态分析**：AI 模型分析帧内容，生成场景描述、关键词、精彩片段
+- **多模态分析**：AI 模型分析帧内容，生成场景描述、景别、运动幅度、画质评级
+- **废片自动识别**：黑屏/闪白/模糊/晃动/花屏/重复帧自动标记，剪辑时精准跳过
+- **精彩片段评分**：AI 对每个精彩片段打分（1-10），辅助剪辑决策
 - **降级处理**：AI 不可用时自动切换为模拟分析，保证功能可用
-- **结果展示**：场景分析、关键词标签云、精彩片段评分、内容分类与摘要
 
 ### ⚙️ 任务队列
 - **状态机**：排队中 → 处理中 → 已完成 / 失败，完整生命周期管理
@@ -154,31 +164,44 @@ autocut/
 │       ├── pages/                  # 📄 页面
 │       │   ├── Home.tsx            #   首页
 │       │   ├── Auth/               #   登录/注册页
-│       │   └── Dashboard/          #   仪表盘/个人中心
+│       │   ├── Dashboard/          #   工作台/AI创作/编辑/字幕/TTS/分析/素材管理
+│       │   └── Admin/              #   用户管理/积分/任务监控/统计
 │       ├── components/             # 🧩 可复用的 UI 组件
 │       │   └── ui/                 #   shadcn/ui 组件库（70+ 个组件）
-│       ├── hooks/                  # 🪝 自定义 React Hook
 │       ├── contexts/               #   全局状态（主题）
 │       └── lib/                    #   工具函数 + tRPC 客户端
 │
 ├── server/                         # 🖥️ 后端代码——API、认证、业务逻辑
 │   ├── _core/                      # 框架层（从模板生成的，一般不需要改动）
-│   │   ├── index.ts                # Express 启动入口
+│   │   ├── index.ts                # Express 启动 + 文件流安全 + 自动恢复任务
 │   │   ├── trpc.ts                 # tRPC 初始化 + 三种权限级别
 │   │   ├── sdk.ts                  # 认证核心：JWT 签发/验证、OAuth 对接
-│   │   ├── context.ts              # 请求上下文（用户信息、req、res）
-│   │   └── cookies.ts             # Cookie 配置（安全相关）
+│   │   ├── llm.ts / openai.ts / deepseek.ts  # LLM 抽象层（多 Provider）
+│   │   └── env.ts/cookies.ts/context.ts/oauth.ts/gateway.ts
 │   ├── services/                   # 业务逻辑——你要改功能主要在这里
 │   │   ├── authService.ts          # 注册、登录、密码处理
 │   │   ├── creditService.ts        # 积分查询、扣费、充值
-│   │   └── emailService.ts         # 邮件发送（⚠️ 目前是假的，需要替换）
+│   │   ├── videoService.ts         # 视频上传/管理
+│   │   ├── projectService.ts       # 项目管理
+│   │   ├── taskService.ts          # 任务队列引擎 + 16 种 Handler
+│   │   ├── analysisService.ts      # AI 视频分析（场景/废片/重复帧识别）
+│   │   ├── aiEditService.ts        # AI 智能剪辑 + 风格模板
+│   │   ├── editStyle.ts            # 3 种剪辑风格预设（带货/口播/情感）
+│   │   ├── editingService.ts       # FFmpeg 底层操作（trim/concat/转场等）
+│   │   ├── subtitleService.ts      # 字幕生成 + 8 语言翻译 + BGM 混音
+│   │   ├── subtitleStyle.ts        # 字幕样式预设（4 种风格）
+│   │   ├── ttsService.ts           # AI 配音（56 种音色）
+│   │   ├── bgmService.ts           # BGM 情绪分类（6 种）
+│   │   ├── aiVideoCreatorService.ts # AI 全自动创作（5 阶段管线）
+│   │   ├── volcanoAsrService.ts    # 火山引擎 ASR
+│   │   ├── adminService.ts         # 管理员接口 + 数据统计
+│   │   └── emailService.ts         # 邮件发送（⚠️ 目前是假的）
 │   ├── routers.ts                  # 📍 API 路由定义——所有接口在这里注册
 │   └── db.ts                       # 数据库连接 + 常用查询
 │
 ├── drizzle/                        # 🗄️ 数据库相关
-│   ├── schema.ts                   # 9 张表的完整定义（这是数据库的"图纸"）
-│   ├── 0000_aromatic_elektra.sql   # 第一次数据库迁移
-│   └── 0001_old_rhodey.sql         # 增量迁移
+│   ├── schema.ts                   # 11 张表的完整定义
+│   └── 0000_*.sql ~ 0007_*.sql     # 增量迁移
 │
 ├── shared/                         # 🔄 前后端共享的代码
 │   ├── const.ts                    #   常量（Cookie 名字、过期时间等）
@@ -413,7 +436,7 @@ A: 因为用了 shadcn/ui，它不是传统的 npm 包，而是把组件源码�
 
 1. **邮件是假的**：`server/services/emailService.ts` 里只打了 `console.log`，真用的话要接 SendGrid 或 Mailgun
 2. **AI 分析和 ASR 依赖外部 API**：AI 分析和字幕识别依赖 Forge API，未配置时自动降级为模拟数据
-3. **任务队列是内存级的**：当前队列在服务进程内运行，重启后队列清空。后续可升级为 Bull/RabbitMQ 实现持久化和分布式处理
+3. **任务队列是内存级的**：当前队列在服务进程内运行（启动时自动恢复中断任务），重启后队列清空。后续可升级为 Bull/RabbitMQ 实现持久化和分布式处理
 4. **云存储依赖 Forge 平台**：`storage.ts` 里的 S3 上传逻辑依赖 Forge 代理，视频上传用的是本地存储，如果需要云存储（如 AWS S3、阿里云 OSS）需要自己适配
 5. **测试几乎为零**：整个项目只有 1 个测试文件，测的是退出登录功能。正经项目应该有几十上百个测试
 6. **没有日志系统**：出了错只能看控制台，没有一个正经的日志收集方案

@@ -1,6 +1,6 @@
 import { getDb } from "../db";
 import { videoAnalysis, videos } from "../../drizzle/schema";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import type { ProcessingTask } from "../../drizzle/schema";
 import { registerTaskHandler } from "./taskService";
 import { openai } from "../_core/openai";
@@ -80,67 +80,68 @@ function videoToBase64(filePath: string): string {
 // ====== AI 分析提示词 ======
 
 /**
- * 完整视频分析提示词（≤60秒 / 小文件直接分析时使用）
+ * Full video analysis prompt (≤60s / small files, direct analysis)
  *
- * 优化重点：
- * 1. 明确告知 AI 输出对象是"剪辑师"，让描述更实用
- * 2. 场景描述增加"可用性"维度，便于后续剪辑决策
- * 3. highlights 新增 reason 字段说明精彩原因
- * 4. 要求输出严格 JSON，避免 markdown 包裹
+ * Optimized for:
+ * 1. Output targets the editing system directly — descriptions are editor-actionable
+ * 2. Scene descriptions include usability dimension for downstream clip selection
+ * 3. Highlights include score + reason for ranking
+ * 4. Strict JSON output, no markdown wrapping
  */
-const ANALYSIS_PROMPT = `你是专业视频内容分析师，你的分析结果直接用于 AI 剪辑系统。完整观看视频，输出 JSON。
+const ANALYSIS_PROMPT = `You are a professional video content analyst. Your analysis feeds directly into an AI video editing system. Watch the entire video carefully and output JSON.
 
-## 关键任务：识别废片（必做）
-你必须逐帧审查，精确标记所有不可用的片段：
-- 黑屏/白屏/纯色画面（哪怕只有 0.1 秒）
-- 闪白/闪黑转场效果（视频自带的劣质转场瑕疵）
-- 严重模糊/失焦/剧烈晃动（导致眩晕感的片段）
-- 花屏/画面撕裂/跳帧/编码错误
-- 镜头盖未开/拍摄者调试/误触录制的画面
-- 与主体完全无关的随机画面
-- 极短片段：持续 < 0.5 秒的碎片画面（几十帧的无意义片段）
+## Critical Task: Identify Waste Segments (REQUIRED)
+Inspect every frame and precisely mark ALL unusable segments:
+- Black/white/solid color screens (even 0.1s)
+- Flash frames (white/black) — low-quality in-camera transitions
+- Severe blur/out-of-focus/shaky footage (causing dizziness)
+- Screen tearing/glitch/corrupted frames/encoding artifacts
+- Lens cap on / camera debugging / accidental recording
+- Random footage completely unrelated to the main subject
+- Ultra-short fragments: duration < 0.5s (meaningless few-frame debris)
+- **Duplicate/still frames**: Nearly identical static frames at the very beginning or end of the video (common "start frame" / "end frame" from recording); if the first or last 0.5s+ of the video is highly similar to adjacent content (same composition, pose, expression), mark as wasteSegments with type "重复帧"(duplicate frame)
 
-废片放入 wasteSegments 数组，不要放入 scenes。剪辑系统会自动跳过它们。
+Place ALL waste segments in the wasteSegments array — do NOT put them in scenes. The editing system will auto-skip them.
 
-## 场景质量标准（quality 字段）
-- "优质"：清晰稳定，可直接用作主镜头
-- "可用"：轻微瑕疵不影响使用
-- "一般"：有明显抖动/噪点，建议缩短使用时长
-- "较差"：模糊/闪白/黑屏/剧烈晃动 → 放入 wasteSegments
+## Scene Quality Standards (quality field)
+- "优质"(premium): Crisp and stable, usable as primary footage
+- "可用"(usable): Minor imperfections, still usable
+- "一般"(average): Noticeable shake/noise, recommend shorter usage
+- "较差"(poor): Blur/flash/black screen/heavy shake → put in wasteSegments
 
-## 输出 JSON（只输出 JSON）
+## Output JSON (ONLY JSON, no markdown wrapper)
 {
   "scenes": [
     {
       "startTime": 0.0,
       "endTime": 4.5,
-      "description": "画面内容（人物/物体/动作/构图/光线/色彩，25字内）",
-      "shotType": "特写|近景|中景|远景|空镜|转场",
-      "motion": "静止|微动|运动|剧烈运动",
+      "description": "Visual content description — subject/object/action/composition/lighting/color, under 25 words",
+      "shotType": "close-up|medium-close|medium|wide|empty|transition",
+      "motion": "static|slight|moving|intense",
       "quality": "优质|可用|一般|较差",
-      "audioGuess": "清晰人声|模糊人声|环境音|安静无声",
-      "tags": ["标签"]
+      "audioGuess": "clear-speech|muffled-speech|ambient|silent",
+      "tags": ["tag1", "tag2"]
     }
   ],
   "wasteSegments": [
     {
       "startTime": 12.0,
       "endTime": 12.3,
-      "description": "闪白转场瑕疵，约9帧",
-      "type": "闪白|黑屏|模糊|晃动|花屏|无关|极短"
+      "description": "Flash frame artifact, ~9 frames",
+      "type": "闪白|黑屏|模糊|晃动|花屏|无关|极短|重复帧"
     }
   ],
   "highlights": [
     {
       "startTime": 3.0,
       "endTime": 6.5,
-      "description": "精彩原因",
+      "description": "Why this moment stands out — visual impact, emotional peak, or key information",
       "score": 9
     }
   ],
-  "keywords": ["关键词", 最多8个],
-  "summary": "整体总结，50字内",
-  "category": "口播|带货|短剧|解说|Vlog|美食|教程|混剪|其他",
+  "keywords": ["keyword1", "keyword2", up to 8],
+  "summary": "Overall summary, under 50 words",
+  "category": "talking-head|product-promo|short-drama|explainer|vlog|food|tutorial|mashup|other",
   "hasClearAudio": true,
   "usabilityScore": 8
 }`;
@@ -154,34 +155,35 @@ const ANALYSIS_PROMPT = `你是专业视频内容分析师，你的分析结果�
  * - 压缩输出体积，每段 keywords 不超过 5 个
  */
 function buildSegmentPrompt(segmentIndex: number, totalSegments: number, offsetSeconds: number): string {
-  return `你是专业视频内容分析师。这是视频第 ${segmentIndex}/${totalSegments} 段（偏移：${offsetSeconds}秒），时间戳从 0 开始。
+  return `You are a professional video content analyst. This is segment ${segmentIndex}/${totalSegments} of a longer video (offset: ${offsetSeconds}s). Timestamps start from 0 within this segment.
 
-## 关键任务
-逐场景描述画面，标记废片（黑屏/闪白/模糊/晃动/无关/极短片段）。废片放入 wasteSegments，不放 scenes。
+## Critical Task
+Describe every scene frame by frame. Mark waste segments (black screen, flash frames, blur, shake, irrelevant, ultra-short, duplicate frames). Place waste segments in wasteSegments — NOT in scenes.
+**Important**: Check the very beginning and end of this segment for duplicate/still frames that are nearly identical to the adjacent content. Mark them as wasteSegments with type="重复帧"(duplicate frame).
 
-## 输出 JSON（只输出 JSON）
+## Output JSON (ONLY JSON, no markdown wrapper)
 {
   "scenes": [
     {
       "startTime": 0.0,
       "endTime": 5.0,
-      "description": "画面内容（25字内）",
-      "shotType": "特写|近景|中景|远景|空镜|转场",
-      "motion": "静止|微动|运动|剧烈运动",
+      "description": "Visual description under 25 words",
+      "shotType": "close-up|medium-close|medium|wide|empty|transition",
+      "motion": "static|slight|moving|intense",
       "quality": "优质|可用|一般|较差",
-      "audioGuess": "清晰人声|模糊人声|环境音|安静无声",
-      "tags": ["标签"]
+      "audioGuess": "clear-speech|muffled-speech|ambient|silent",
+      "tags": ["tag"]
     }
   ],
   "wasteSegments": [
-    { "startTime": 0.0, "endTime": 0.5, "description": "闪白瑕疵", "type": "闪白|黑屏|模糊|晃动|花屏|无关|极短" }
+    { "startTime": 0.0, "endTime": 0.5, "description": "Flash artifact", "type": "闪白|黑屏|模糊|晃动|花屏|无关|极短|重复帧" }
   ],
   "highlights": [
-    { "startTime": 0.0, "endTime": 3.0, "description": "精彩原因", "score": 8 }
+    { "startTime": 0.0, "endTime": 3.0, "description": "Why this is a highlight moment", "score": 8 }
   ],
-  "keywords": ["关键词"],
-  "summary": "本段总结，30字内",
-  "category": "口播|带货|短剧|解说|Vlog|美食|教程|混剪|其他"
+  "keywords": ["keyword1", "keyword2"],
+  "summary": "Segment summary under 30 words",
+  "category": "talking-head|product-promo|short-drama|explainer|vlog|food|tutorial|mashup|other"
 }`;
 }
 
@@ -252,6 +254,7 @@ function mergeSegmentResults(results: Record<string, unknown>[]): Record<string,
   if (results.length === 1) return results[0];
 
   const allScenes: unknown[] = [];
+  const allWasteSegments: unknown[] = [];
   const allKeywords = new Set<string>();
   const allHighlights: Array<Record<string, unknown>> = [];
   const summaries: string[] = [];
@@ -277,6 +280,20 @@ function mergeSegmentResults(results: Record<string, unknown>[]): Record<string,
         quality: s.quality || "可用",
         audioGuess: s.audioGuess || "",
         tags: s.tags || [],
+      });
+    }
+
+    // 合并废片列表，时间戳加上段偏移
+    const wasteSegs = (r.wasteSegments as any[]) || [];
+    for (const w of wasteSegs) {
+      const wStart = toSeconds(w.startTime ?? 0) + offset;
+      const wRawEnd = toSeconds(w.endTime ?? w.startTime ?? 0) + offset;
+      const wEnd = wRawEnd > wStart ? wRawEnd : wStart + 0.5;
+      allWasteSegments.push({
+        startTime: Math.round(wStart * 10) / 10,
+        endTime: Math.round(wEnd * 10) / 10,
+        description: w.description || "",
+        type: w.type || "未知",
       });
     }
 
@@ -338,6 +355,7 @@ function mergeSegmentResults(results: Record<string, unknown>[]): Record<string,
 
   return {
     scenes: allScenes,
+    wasteSegments: allWasteSegments,
     keywords: Array.from(allKeywords).slice(0, 15),
     highlights: dedupedHighlights,
     summary: summaries.join(" ／ ").slice(0, 300),
@@ -522,6 +540,7 @@ async function saveAnalysisResult(
       category: result.category,
       hasClearAudio: result.hasClearAudio,
       usabilityScore: result.usabilityScore,
+      wasteSegments: result.wasteSegments || [],
     },
   });
 }
@@ -573,6 +592,7 @@ export async function getAnalysisByVideoId(
     .select()
     .from(videoAnalysis)
     .where(eq(videoAnalysis.videoId, videoId))
+    .orderBy(desc(videoAnalysis.createdAt))
     .limit(1);
 
   return result.length > 0 ? mapAnalysisRow(result[0]) : null;

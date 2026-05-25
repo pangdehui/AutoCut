@@ -1,6 +1,6 @@
 import { getDb } from "../db";
 import { videos, videoAnalysis } from "../../drizzle/schema";
-import { eq, and, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull } from "drizzle-orm";
 import type { ProcessingTask } from "../../drizzle/schema";
 import { registerTaskHandler } from "./taskService";
 import { getDeepSeek } from "../_core/deepseek";
@@ -80,6 +80,8 @@ interface AiCreatorParams {
     language?: string;
     burnIn?: boolean;
   };
+  /** 强制静音原视频（用户在 prompt 里明确说了"原音静音/原声去掉"） */
+  muteOriginalOverride?: boolean;
   /** 仅生成方案+审查，不执行剪辑（用户确认后再继续） */
   planOnly?: boolean;
   /** 用户确认后传入，跳过 Phase 0-2，直接执行 Phase 3-5 */
@@ -163,12 +165,18 @@ async function getAnalyzedVideos(userId: number, projectId?: number): Promise<Vi
       sceneDescriptions: videoAnalysis.sceneDescriptions,
       keywords: videoAnalysis.keywords,
       metadata: videoAnalysis.metadata,
+      analysisCreatedAt: videoAnalysis.createdAt,
     })
     .from(videos)
     .innerJoin(videoAnalysis, eq(videos.id, videoAnalysis.videoId))
-    .where(and(...conditions));
+    .where(and(...conditions))
+    .orderBy(desc(videoAnalysis.createdAt));
 
-  return rows.map((r) => {
+  const latestRows = rows.filter((row, index, arr) =>
+    arr.findIndex((candidate) => candidate.id === row.id) === index
+  );
+
+  return latestRows.map((r) => {
     const meta = (r.metadata || {}) as Record<string, unknown>;
     const rawScenes = (r.sceneDescriptions || []) as any[];
     const allScenes = rawScenes
@@ -223,87 +231,108 @@ const VOICE_CATALOG: Array<{ id: string; tone: string; suit: string }> = [
 
 async function phase0AutoConfig(prompt: string): Promise<AutoConfig> {
   const voiceCatalogText = VOICE_CATALOG
-    .map((v) => `  • ${v.id} → ${v.tone}（适合：${v.suit}）`)
+    .map((v) => `  • ${v.id} → ${v.tone} (best for: ${v.suit})`)
     .join("\n");
 
-  const systemPrompt = `你是资深短视频后期统筹，负责根据创作需求一次性确定所有制作参数。你的决策将直接影响成片质量，每个参数都要认真匹配内容特性。
+  const systemPrompt = `You are a senior short-video post-production director. Based on the creative request, determine ALL production parameters at once. Each parameter must carefully match the content type — your decisions directly affect final quality.
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-一、画幅选择（aspect）
+1. Aspect Ratio
 ━━━━━━━━━━━━━━━━━━━━━━━
-• 9:16  竖屏 → 抖音/快手/视频号/Reels（移动端刷屏场景，默认首选）
-• 16:9  横屏 → B站/YouTube/教程/纪录片/企业宣传
-• 1:1   方形 → 小红书图文视频/品牌贴片
-判断依据：用户提到平台名称优先；无平台信息时看内容类型（带货/Vlog→9:16；教程/纪录→16:9）
+• 9:16  vertical → TikTok/Douyin/Shorts/Reels (mobile-first, default)
+• 16:9  horizontal → YouTube/tutorials/documentaries/corporate
+• 1:1   square → Xiaohongshu/brand content
+Logic: platform name in request first; otherwise by content type (product/vlog→9:16; tutorial/doc→16:9)
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-二、分辨率（resolution）
+2. Resolution
 ━━━━━━━━━━━━━━━━━━━━━━━
-• 1080p → 精品内容、有品牌背书、产品展示（默认）
-• 720p  → 快速日常 Vlog、追求文件体积小
+• 1080p → premium content, brand, product showcase (default)
+• 720p  → quick daily vlog, small file size needed
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-三、音色选择（voiceId）⚠️ 最重要
+3. Voice Selection (voiceId) ⚠️ CRITICAL
 ━━━━━━━━━━━━━━━━━━━━━━━
-必须从以下清单严格选取，错误音色会毁掉整条视频：
+Must pick from this catalog — wrong voice ruins the video:
 ${voiceCatalogText}
 
-匹配逻辑（按优先级）：
-1. 用户明确指定性别/风格 → 直接匹配
-2. 内容类型匹配：
-   - 美食/探店/日常生活 → female-chengshu 或 Chinese (Mandarin)_Warm_Bestie
-   - 带货/种草/产品推广 → male-qn-badao 或 female-yujie
-   - 知识/科普/深度解析 → male-qn-jingying 或 female-yujie
-   - 情感/故事/治愈系   → Chinese (Mandarin)_Warm_Bestie 或 male-qn-qingse
-   - 潮流/年轻/二次元   → female-shaonv 或 male-qn-qingse
-   - 旅行/人文/纪录片   → Chinese (Mandarin)_Gentleman
-   - 新闻/时事/严肃话题 → Chinese (Mandarin)_News_Anchor
-   - 商业/金融/企业宣传 → Chinese (Mandarin)_Reliable_Executive
-3. 兜底（实在无法判断）→ female-chengshu
+Matching logic (by priority):
+1. User explicitly specifies gender/tone/name → direct match
+2. Content SUBTYPE matching (more specific = better):
+   - Food ASMR / slow cooking → Chinese (Mandarin)_Warm_Bestie or female-chengshu (gentle, intimate)
+   - Food fast-cut / street food → male-qn-badao or female-yujie (energetic, punchy)
+   - Product promo (beauty/fashion) → female-yujie (sophisticated, trustworthy)
+   - Product promo (tech/gadget/digital) → male-qn-jingying (precise, authoritative)
+   - Product promo (general/deals) → male-qn-badao (urgent, compelling)
+   - Knowledge/tutorial/deep-dive → male-qn-jingying (clear, credible) or female-yujie
+   - Emotional story / healing / nostalgia → Chinese (Mandarin)_Warm_Bestie or male-qn-qingse
+   - Youth culture / fashion / trends → female-shaonv or male-qn-qingse
+   - Travel documentary / culture → Chinese (Mandarin)_Gentleman (warm, literary)
+   - Travel fast-cut / adventure → male-qn-badao or female-yujie
+   - News / serious topics → Chinese (Mandarin)_News_Anchor
+   - Business / finance / B2B → Chinese (Mandarin)_Reliable_Executive
+   - Daily Vlog (female creator) → female-chengshu or Chinese (Mandarin)_Warm_Bestie
+   - Daily Vlog (male creator) → male-qn-qingse or Chinese (Mandarin)_Gentleman
+3. Fallback (no clear match) → female-chengshu
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-四、语速（speed）
+4. Speed
 ━━━━━━━━━━━━━━━━━━━━━━━
-• 0.85-0.95 → 治愈/纪录片/情感叙事（留白感）
-• 1.0       → 标准，通用场景
-• 1.05-1.15 → 信息密度高的知识内容
-• 1.15-1.25 → 带货/快节奏/促销（急迫感）
-注意：语速影响用户体验，不要超过 1.25，过快会疲劳
+• 0.85-0.95 → healing/documentary/emotional (breathing room)
+• 1.0       → standard, general purpose
+• 1.05-1.15 → knowledge content, higher information density
+• 1.15-1.25 → product promo/fast-paced/limited-time (urgency)
+Note: never exceed 1.25 — too fast causes fatigue
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-五、字幕配置
+5. Subtitle Configuration
 ━━━━━━━━━━━━━━━━━━━━━━━
-subtitleStyle 选择：
-• default       → 白字黑边，通用，95% 场景适用
-• bold_caption  → 大字加粗，带货/口播/强调型内容
-• minimal       → 半透明细字，纪录片/Vlog/艺术风格
-• tiktok_yellow → 黄底黑字，潮流/娱乐/高能混剪
-大多数内容：subtitlesEnabled=true, subtitlesBurnIn=true（烧录进视频）
-noAudio=true 时：字幕是唯一信息载体，必须开启且烧录
+subtitleStyle options:
+• default       → white text with black outline, universal, 95% of use cases
+• bold_caption  → large bold text, product promo/talking-head/emphasis content
+• minimal       → semi-transparent thin text, documentary/vlog/artistic
+• tiktok_yellow → yellow text on black, trendy/entertainment/high-energy mashup
+Most content: subtitlesEnabled=true, subtitlesBurnIn=true
+When noAudio=true: subtitles are the ONLY information carrier — MUST enable and burn-in
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-六、BGM 情绪（bgmMood）
+6. BGM Mood — Match content SUBTYPE, not just broad category
 ━━━━━━━━━━━━━━━━━━━━━━━
-• upbeat    → 轻快活力（日常/打卡/好消息）
-• calm      → 舒缓治愈（美食/自然/睡前）
-• dramatic  → 戏剧张力（反转/揭秘/冲突）
-• warm      → 温情暖意（亲情/回忆/成长）
-• energetic → 激情澎湃（运动/挑战/励志）
-• cinematic → 史诗大片（旅行大片/品牌宣传）
-• none      → 无 BGM（纯讲解/正式访谈/用户要求）
-bgmVolume 参考：有配音时 0.10-0.18；无配音时 0.25-0.40
+• upbeat    → light & cheerful (daily vlog, check-in, good news, unboxing, casual food)
+• calm      → soothing & gentle (ASMR cooking, nature, bedtime, meditation, slow lifestyle)
+• dramatic  → tension & reveal (mystery, conflict, "wait for it" moments, transformation reveal)
+• warm      → heartwarming & nostalgic (family, memories, growth story, emotional Vlog, pet content)
+• energetic → high-energy & hype (sports highlights, challenge, workout, street fashion, festival)
+• cinematic → epic & grand (travel films, brand promo, landscape, milestone celebration, luxury)
+• none      → no BGM (pure narration, formal interview, user explicitly wants silence)
+
+Content-type → BGM mapping reference:
+  • 美食/food b-roll → calm or warm (let the food sounds breathe)
+  • 美食/food fast-cut → upbeat
+  • 带货/product promo (urgency) → energetic or upbeat
+  • 带货/product promo (premium/luxury) → cinematic or warm
+  • 教程/tutorial → calm or none (don't distract from instruction)
+  • Vlog/日常 → warm or upbeat (personality-driven)
+  • 知识科普/knowledge → cinematic or calm (intellectual, not distracting)
+  • 情感故事/emotional → warm or dramatic (follow the emotional arc)
+  • 旅行/travel → cinematic or upbeat (aspirational)
+
+bgmVolume reference:
+  • With TTS voiceover: 0.08–0.15 (BGM must duck behind speech)
+  • Without TTS (noAudio=true, BGM + subtitles only): 0.25–0.40 (BGM is the audio backbone)
+  • Product showcase with voiceover: 0.10–0.12 (slightly higher, adds energy)
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-七、noAudio（是否跳过配音）
+7. noAudio (Skip Voiceover)
 ━━━━━━━━━━━━━━━━━━━━━━━
-仅当用户明确说"不要配音/纯字幕/静音版/只要BGM"时设为 true，其余一律 false
+Set to true ONLY when user explicitly says "no voiceover / subtitles only / silent / just BGM". Otherwise false.
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-输出严格 JSON，不要任何多余文字：
+Output strictly as JSON, no other text:
 {
   "aspect": "9:16",
   "resolution": "1080p",
-  "voiceId": "音色ID",
+  "voiceId": "voice-id",
   "speed": 1.0,
   "noAudio": false,
   "subtitlesEnabled": true,
@@ -311,14 +340,14 @@ bgmVolume 参考：有配音时 0.10-0.18；无配音时 0.25-0.40
   "subtitleStyle": "default",
   "bgmMood": "upbeat",
   "bgmVolume": 0.15,
-  "reasoning": "简述每个关键参数的选择理由（中文，100字内）"
+  "reasoning": "Brief rationale for each key parameter choice in Chinese, under 100 chars"
 }`;
 
   const result = await getDeepSeek().chat.completions.create({
     model: ENV.deepseekModel,
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user", content: `创作需求：${prompt}` },
+      { role: "user", content: `Creative request: ${prompt}` },
     ],
   });
 
@@ -365,15 +394,15 @@ const INTENT_SCHEMA = {
   schema: {
     type: "object",
     properties: {
-      topic: { type: "string", description: "视频主题" },
-      style: { type: "string", description: "视频风格，如 promotional/tutorial/vlog/review" },
-      targetDuration: { type: "number", description: "目标视频时长（秒）" },
+      topic: { type: "string", description: "Video topic in Chinese" },
+      style: { type: "string", description: "Video style, e.g. product-promo/vlog/tutorial/review" },
+      targetDuration: { type: "number", description: "Target video duration in seconds" },
       selectedVideoIds: {
         type: "array",
         items: { type: "number" },
-        description: "选中用于创作的相关视频 ID 列表",
+        description: "Selected relevant video IDs for creation",
       },
-      reasoning: { type: "string", description: "选择这些视频的理由（中文）" },
+      reasoning: { type: "string", description: "Selection rationale in Chinese" },
     },
     required: ["topic", "style", "targetDuration", "selectedVideoIds", "reasoning"],
   },
@@ -386,60 +415,74 @@ async function phase1Intent(
 ): Promise<IntentResult> {
   const videoListText = videoSummaries
     .map((v) => {
-      const kw = (v.keywords || []).join("、");
+      const kw = (v.keywords || []).join(", ");
       const sceneCount = (v.scenes || []).length;
       const dur = v.duration?.toFixed(0) ?? "?";
-      return `  [ID:${v.id}] 《${v.fileName}》时长${dur}秒 | 分类:${v.category || "未知"} | 关键词:${kw || "无"} | 场景数:${sceneCount}`;
+      // Count quality distribution for diversity hints
+      const qualityCounts: Record<string, number> = {};
+      (v.scenes || []).forEach((s: any) => {
+        const q = s.quality || "可用";
+        qualityCounts[q] = (qualityCounts[q] || 0) + 1;
+      });
+      const qSummary = Object.entries(qualityCounts)
+        .map(([q, n]) => `${q}:${n}`)
+        .join(" ");
+      return `  [ID:${v.id}] ${v.fileName} | ${dur}s | category:${v.category || "?"} | keywords:${kw || "none"} | scenes:${sceneCount} | quality: ${qSummary}`;
     })
     .join("\n");
 
-  const systemPrompt = `你是资深短视频创意总监，擅长从素材库中挑选最合适的素材，并为剪辑师提供精准的创意方向。
+  const systemPrompt = `You are a senior short-video creative director. Your job is to select the best footage from the media library and provide precise, executable creative direction to the editor.
 
-## 你的任务
+## Your Task
 
-**第一步：深度解读用户意图**
-- 用户真正想要什么？（不只是字面意思，更要理解情感诉求和传播目标）
-- 目标受众是谁？他们的痛点/兴趣是什么？
-- 核心信息是什么？用一句话概括这个视频要说的最重要的事
+**Step 1: Deep Intent Interpretation**
+- What does the user REALLY want? Read between the lines — emotional appeal, distribution platform, conversion goal.
+- Who is the target audience? Age bracket, interests, pain points. This shapes EVERYTHING: tone, pace, visual style.
+- What is the ONE thing this video must communicate? If the viewer remembers only one sentence, what should it be?
+- Is there an implicit platform? (Douyin = fast/vertical/trendy; Xiaohongshu = aesthetic/clean/slower; YouTube = horizontal/detailed; WeChat = square/quiet)
 
-**第二步：智能选材（⚠️ 素材多样性是硬要求）**
-选材原则（按优先级）：
-1. 内容相关性：素材主题/关键词是否匹配需求
-2. 画面多样性：优先选不同场景、不同景别、不同氛围的素材，避免单调
-3. 时长充裕度：素材时长要足够剪出目标时长，宁可多选不要少选
-4. 质量优先：有"模糊/晃动/黑屏"标记的素材降低优先级
+**Step 2: Smart Footage Selection (DIVERSITY IS A HARD REQUIREMENT)**
 
-⚠️ 硬性选材数量要求：
-- 素材库有 ≥10 个相关素材 → 至少选 6 个，理想 8-10 个
-- 素材库有 5-9 个相关素材 → 至少选 4 个，理想 5-7 个
-- 素材库有 3-4 个相关素材 → 全选
-- 不要强行凑数，但也不要为了精简而砍掉有价值的素材。素材够多的情况下选太少会导致剪辑师只能反复用同一素材，视觉疲劳。
+Selection scoring (mental checklist per video):
+- Relevance score (1–5): Do keywords/category match the creative request?
+- Visual diversity contribution (1–5): Does this video add a NEW angle, shot type, or mood that others don't?
+- Duration buffer (1–5): Does this have enough runtime to contribute meaningful clips?
+- Quality baseline: If >30% of scenes are "一般"(average), consider it lower priority.
 
-**第三步：创意简报**
-给剪辑师一份可直接执行的创意简报，包含：
-- 开头钩子设计（前3秒如何抓住观众）
-- 叙事节奏（快切/慢镜/情绪起伏节点）
-- 情绪弧线（从什么情绪出发，经历什么转变，以什么情绪结束）
-- 视觉语言建议（景别组合、颜色基调）
-- 结尾设计（呼吁行动/情感收尾/留下悬念）
+⚠️ Hard selection rules:
+- ≥10 relevant videos → select 6–10 (more footage = more visual variety)
+- 5–9 relevant → select 4–7
+- 3–4 relevant → select all
+- NEVER select only 1–2 videos when more are available — editing from 1 source = visual monotony = high swipe-away rate
+- If you find yourself selecting videos with similar categories, deliberately add 1–2 with different visual characteristics for contrast
 
-## 可用素材库
+**Step 3: Creative Brief — Be specific, not generic**
+
+Write a creative brief that the editor can directly execute. AVOID vague instructions like "make it engaging" or "good pacing." Be CONCRETE:
+
+1. Hook strategy: WHICH specific pattern to use (visual stun? question? result-first? pain-point?) and WHY for this content.
+2. Narrative structure: WHICH content-type template fits best, and what the 3 key story beats are.
+3. Emotional arc: Start emotion → middle emotion → end emotion. Be specific ("curiosity → surprise → satisfaction" not "positive emotions").
+4. Visual language: Recommend shot type mix (e.g. "60% medium shots, 25% close-ups, 15% wide"), color/mood keywords.
+5. Ending: CTA type (follow/comment/buy/save) OR emotional landing.
+
+## Available Media Library
 ${videoListText}
 
-## 目标时长参考
-• 15-30秒：快节奏爆款（带货/挑战/搞笑）
-• 30-60秒：标准内容（Vlog/测评/教程）
-• 60-120秒：深度内容（纪录/故事/详细教程）
-• 未指定时：根据内容类型判断，带货默认30秒，Vlog默认45秒，教程默认60秒
+## Target Duration Reference
+• 15–30s: Viral short (product flash, comedy, challenge, quick tip)
+• 30–60s: Standard (vlog, review, recipe, tutorial, story) — DEFAULT for unspecified
+• 60–120s: In-depth (documentary, detailed tutorial, narrative story)
+• Product promo → 25–35s | Food → 30–45s | Tutorial → 45–60s | Vlog → 40–60s | Knowledge → 45–90s
 
-## 输出 JSON（严格格式，不要额外文字）
+## Output JSON (strict format, no extra text)
 {
-  "topic": "视频核心主题（一句话，10字内）",
-  "style": "风格类型（带货/美食Vlog/知识科普/情感故事/产品测评/旅行记录/混剪/其他）",
+  "topic": "Video topic in Chinese, under 10 characters — specific, not generic",
+  "style": "Content style in Chinese — be precise: 美食教程/产品种草/旅行Vlog/知识科普/情感叙事/混剪/口播/测评/探店",
   "targetDuration": 45,
   "selectedVideoIds": [1, 3, 5],
-  "reasoning": "选材理由（简明扼要，说清楚选了什么、为什么选、多样性如何保证）",
-  "creativeBrief": "给剪辑师的创意简报（150字内，包含开头钩子/叙事节奏/情绪弧线/结尾设计）",
+  "reasoning": "In Chinese: what was selected, WHY each, how diversity is achieved (mention shot types, moods, categories represented)",
+  "creativeBrief": "In Chinese, under 180 chars: specific hook pattern + content template + 3 beat names + shot mix ratio + CTA type. Be concrete, not abstract.",
   "suggestedMute": true,
   "suggestedBgm": "warm"
 }`;
@@ -451,9 +494,9 @@ ${videoListText}
         role: "system",
         content:
           systemPrompt +
-          `\n\n⚠️ 严格要求：只输出合法 JSON，不要任何 Markdown 标记或说明文字。`,
+          `\n\n⚠️ STRICT: Output ONLY valid JSON. No markdown wrappers, no extra text.`,
       },
-      { role: "user", content: `创作需求：${prompt}` },
+      { role: "user", content: `Creative request: ${prompt}` },
     ],
   });
 
@@ -514,6 +557,7 @@ async function phase2Script(
   selectedVideos: VideoSummary[],
   selectedVideoIds: number[],
   creativeBrief?: string,
+  noAudio?: boolean,
 ): Promise<ScriptResult> {
   const sceneDetails = selectedVideos
     .map((v) => {
@@ -522,108 +566,216 @@ async function phase2Script(
         .map(
           (s) =>
             `    [${s.startTime.toFixed(1)}s → ${s.endTime.toFixed(1)}s] ${s.description}` +
-            (s.shotType ? ` | 景别:${s.shotType}` : "") +
-            (s.motion ? ` | 运动:${s.motion}` : "") +
-            (s.quality ? ` | 质量:${s.quality}` : "") +
-            (s.tags?.length ? ` | 标签:${s.tags.join(",")}` : "")
+            (s.shotType ? ` | shot:${s.shotType}` : "") +
+            (s.motion ? ` | motion:${s.motion}` : "") +
+            (s.quality ? ` | quality:${s.quality}` : "") +
+            (s.tags?.length ? ` | tags:${s.tags.join(",")}` : "")
         )
         .join("\n");
       return (
-        `【序号:${vidx} | ID:${v.id}】${v.fileName}\n` +
-        `  时长:${v.duration?.toFixed(1) ?? "?"}秒 | 类型:${v.category || "未知"}\n` +
-        `  场景明细:\n${scenes}`
+        `[Index:${vidx} | ID:${v.id}] ${v.fileName}\n` +
+        `  duration:${v.duration?.toFixed(1) ?? "?"}s | category:${v.category || "?"}\n` +
+        `  scenes:\n${scenes}`
       );
     })
     .join("\n\n");
 
-  const systemPrompt = `你是一位拥有15年经验的顶级短视频剪辑大师，同时精通广告文案、叙事设计和观众心理。你的作品在各大平台斩获千万播放，深知每一帧都要"值钱"。
+  const systemPrompt = `You are a world-class short-video editor with 15 years of experience across TikTok, Douyin, and YouTube Shorts. You are equally skilled in ad copywriting, narrative design, visual composition, and audience psychology. Your work consistently achieves >80% completion rates and drives measurable conversion. You know every single frame must EARN its place.
 
-━━━━━━━━━━━━━━━━━━━━━━━
-核心工作哲学
-━━━━━━━━━━━━━━━━━━━━━━━
-• 每个镜头都必须有存在的理由：信息量、情绪价值、视觉冲击，三选一必须满足
-• 开头3秒决定留存率，中段节奏决定完播率，结尾决定转化率
-• 宁可少一个片段，不要用一个无聊的镜头填充时间
-• narration 是画面的灵魂，不是画面的说明书
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CORE PHILOSOPHY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Every shot must deliver one of: information value, emotional value, or visual impact. If a shot does none of these, it doesn't belong.
+• The first 3 seconds determine retention (>70% drop-off happens here); the mid-section rhythm determines completion rate; the ending determines conversion/share/comment.
+• Narration is never a visual description — it's the emotional and informational layer ON TOP of the visuals. Let the visuals SHOW, let the narration TELL what can't be seen.
+• Visual surprise is the cheapest retention hack: when the audience can predict the next shot, they swipe away.
 
-━━━━━━━━━━━━━━━━━━━━━━━
-一、素材精读（必做，不能跳过）
-━━━━━━━━━━━━━━━━━━━━━━━
-逐个分析每个可用场景：
-✓ 标记：精彩瞬间 / 情绪高潮 / 视觉冲击 / 特写/慢镜机会
-✗ 排除：模糊画面 / 剧烈抖动（如必须用，限1.5秒内）/ 黑屏/闪白 / 无关内容
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. HOOK ARSENAL — Pick the right weapon for the content type
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-━━━━━━━━━━━━━━━━━━━━━━━
-二、叙事结构设计
-━━━━━━━━━━━━━━━━━━━━━━━
-【开头 0-5秒：强钩子区】
-  必须满足以下之一：
-  • 视觉钩子：震撼画面/反常识画面/强烈色彩/快速动作
-  • 悬念钩子：问句/未解之谜/意外结果先展示
-  • 情绪钩子：共鸣痛点/强烈情感/幽默冲突
-  ❌ 绝对禁止："大家好"/"欢迎观看"/"今天给大家"这类平淡开场
+[PATTERN A: Visual Stun Hook] — Best for: food, product showcase, travel, fashion
+  • Extreme close-up of the most visually appealing detail (sizzling oil, fabric texture, product finish)
+  • Rapid macro-to-wide reveal: start 2cm from subject → pull back to full scene
+  • Color bomb: intensely saturated hero shot that wouldn't exist in daily life
+  • Duration: 1.0–2.5s per hook clip, cut directly to context clip
+  • Narration style: Start mid-sentence or with an emotional exclamation ("这也太..." / "看这个...")
 
-【中段：信息推进区】
-  • 围绕核心信息展开，每个片段都要推进故事/论点
-  • 节奏要有变化：快切制造紧张感，停留制造情绪感
-  • 适时插入特写/细节镜头，增加画面层次
-  • 信息要分层：先抛问题，再给证据，最后给结论
+[PATTERN B: Question/Contradiction Hook] — Best for: knowledge, explainer, review, tech
+  • Open with a counter-intuitive statement or provocative question
+  • Show visual evidence that contradicts common belief
+  • "你一定不知道..." / "很多人以为...但其实..." / "为什么..."
+  • Duration: question clip 1.5–2s → answer tease clip 1.5–2s → context
 
-【结尾：转化区】
-  • 情感/故事：有回味，情绪完整落地
-  • 带货/推广：明确 CTA（行动召唤），价值感拉满
-  • 知识/科普：总结升华，留下一个"记忆点"
-  • 可以设置悬念引导关注/留言
+[PATTERN C: Result-First Hook] — Best for: transformation, tutorial, before/after, product effect
+  • Show the END RESULT in the first 1.5 seconds (the "wow" moment)
+  • Then rewind to show the process/journey
+  • Narration: "这就是..." / "XX天之后..." followed by flashback
+  • Must use the most dramatic visual contrast available
 
-━━━━━━━━━━━━━━━━━━━━━━━
-三、Narration 写作规范
-━━━━━━━━━━━━━━━━━━━━━━━
-• 每段 15-35 字，口语化，有节奏感，可以朗读出来
-• 不要复述画面（"你看这里有一个..."），要解读/升华/情绪化
-• 关键信息前可用停顿强调（用"……"表示）
-• 数字/价格/核心卖点要清晰说出
-• narration 拼接即完整 script，要逻辑连贯，不能断层
+[PATTERN D: Pain-Point Hook] — Best for: product promo, service, lifestyle, health
+  • Show the frustration/pain point in 1–2s (the "before" state)
+  • Narration names the problem the audience feels but hasn't articulated
+  • Immediate transition to solution/relief
+  • "你是不是也..." / "每次...都想..."
 
-━━━━━━━━━━━━━━━━━━━━━━━
-四、剪辑节奏规范
-━━━━━━━━━━━━━━━━━━━━━━━
-镜头时长：
-• 快切区（动作/节奏/爆点）：0.8-2.0 秒
-• 标准区（信息/叙述）：2.0-4.0 秒
-• 情绪停留区（高潮/反转/感动）：3.0-6.0 秒
-• 单镜头不超过 8 秒（极特殊情况除外）
+[PATTERN E: Action/Energy Hook] — Best for: sports, challenge, gaming, street content
+  • Pure kinetic energy opening — motion blur, quick pans, jump cuts
+  • 3–5 ultra-short clips (0.5–1.0s each) stitched with cut transitions
+  • Rhythmic narration or text-only opening
 
-转场使用原则：
-• 同场景/快节奏 → cut（硬切，最常用）
-• 段落切换/情绪转折 → fadeblack（黑场，庄重感）
-• 梦境/回忆/情绪溶解 → dissolve 或 fade
-• 动感/年轻内容 → slideleft / slideright（动态感）
-• 高能/潮流内容 → wipeleft / zoomin
+❌ FORBIDDEN OPENINGS (will cause immediate swipe-away):
+  • "大家好欢迎来到..." / "Hello everyone welcome to..."
+  • "今天给大家分享..." / "Today I'm going to share..."
+  • Any clip longer than 3s without a clear hook signal
+  • Slow fade-in from black (wastes precious hook seconds)
+  • A-roll of someone just talking without supporting B-roll
 
-素材使用约束（⚠️ 严格执行）：
-• 同一 videoIndex 在整片中最多使用 3 次
-• 同一 videoIndex 不得连续使用（必须间隔至少 2 个其他片段）
-• 同一素材的同一时间段不得重复截取
-• 剧烈抖动/眩晕感镜头单段不超过 1.5 秒，全片不超过 2 次
-• 优先使用场景列表中有明确描述的时间段
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. CONTENT-TYPE NARRATIVE TEMPLATES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-muteOriginal 判断：
-• 带货/口播/解说/知识类 → true（原声会干扰配音）
-• 短剧/采访/纪录/现场还原类 → false（原声有价值）
+[FOOD / 美食] Structure: Tease → Process → Climax → Call
+  1. Hook (0–3s): Extreme close-up of the most appetizing detail
+  2. Context (3–8s): What we're making, why it matters
+  3. Process beats (8–70%): Key steps, each 2–4s, narrated with sensory language
+  4. Climax reveal (70–85%): The finished dish, slow-mo or dramatic angle
+  5. CTA (85–100%): "收藏起来下次做" / "你觉得怎么样"
+  Tone: Warm, sensory, slightly hungry-inducing. Narration should make mouth water.
 
-━━━━━━━━━━━━━━━━━━━━━━━
-五、输出格式要求
-━━━━━━━━━━━━━━━━━━━━━━━
-严格输出以下 JSON，不要任何额外说明：
+[PRODUCT PROMO / 带货] Structure: Pain → Solution → Proof → Scarcity → Buy
+  1. Hook (0–3s): Pain point visual or result-first showcase
+  2. Problem amplification (3–25%): 2–3 clips showing why current solution sucks
+  3. Product reveal + features (25–55%): Close-ups, feature demos, texture shots
+  4. Social proof / results (55–75%): Before/after, testimonials, usage scenes
+  5. Scarcity + CTA (75–100%): Limited time, price anchor, "点击下方"
+  Tone: Urgent, authoritative, benefit-driven. Numbers and specifics win.
+
+[TUTORIAL / 教程] Structure: Promise → Step-by-step → Recap → CTA
+  1. Hook (0–3s): Result preview + skill level promise ("30秒学会...")
+  2. Step 1–N (3–85%): Each step = 1 clip, clear visual + concise narration
+  3. Recap flash (85–95%): Quick montage of all steps (0.5s each)
+  4. CTA (95–100%): Follow for more, comment questions
+  Tone: Clear, encouraging, zero fluff. Every word advances the learning.
+
+[VLOG / 日常] Structure: Moment → Context → Journey → Reflection
+  1. Hook (0–3s): The most emotionally charged or visually striking moment
+  2. Setup (3–20%): Time, place, mood, why this matters
+  3. Journey beats (20–80%): 3–5 key moments, varied pacing
+  4. Reflection/resolution (80–100%): What was learned, felt, or changed
+  Tone: Authentic, intimate, as if talking to a close friend.
+
+[KNOWLEDGE / 知识科普] Structure: Question → Evidence → Insight → Mind-blow
+  1. Hook (0–3s): Surprising fact or question that challenges assumption
+  2. Context (3–20%): Why this matters, what people usually think
+  3. Evidence chain (20–75%): 3–4 supporting clips, each = one data point
+  4. Mind-blow moment (75–90%): The "aha" insight that changes perspective
+  5. Engagement bait (90–100%): "你觉得呢?" / "评论区告诉我"
+  Tone: Curious, intelligent but accessible, slightly conspiratorial.
+
+[EMOTIONAL / 情感故事] Structure: Mood → Build → Breakthrough → Resonance
+  1. Hook (0–3s): Emotional anchor — a face, a moment, a detail that carries feeling
+  2. Buildup (3–60%): Layered details, slow pacing, letting emotions breathe
+  3. Breakthrough (60–85%): The emotional peak — revelation, realization, release
+  4. Resonance ending (85–100%): Universal truth that echoes in viewer's life
+  Tone: Gentle, spacious, unhurried. Narration should have breathing room. Use longer clips (4–6s).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. VISUAL DIVERSITY RULES (Shot Type Mixing)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Shot type variety directly impacts perceived production quality:
+• Never place two extreme close-ups back-to-back (disorienting)
+• Never place two wide shots back-to-back without a detail shot between (feels floaty)
+• Ideal pattern: Wide (establish) → Medium (context) → Close-up (detail) → Medium → Wide
+• Insert at least one detail/close-up shot every 3–4 clips (texture, hands, eyes, product)
+• When switching between different source videos, the first clip should establish the new context
+• Motion variety: alternate between static shots and moving shots — 3 static in a row = boring
+
+Quality tier mixing strategy:
+• "优质"(premium): Use for hooks, climax moments, product close-ups, money shots — ~40% of clips
+• "可用"(usable): Use for context, transitions, supporting B-roll — ~50% of clips
+• "一般"(average): Use sparingly, max 1–2 clips, keep them short (<2s), only when no alternative
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. NARRATION CRAFT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Per-segment narration length (characters):
+• Hook clips: 5–12 chars (short, punchy)
+• Standard information: 15–25 chars
+• Emotional pause / climax: 10–18 chars (let the visuals breathe)
+• CTA / ending: 8–15 chars
+
+Writing techniques:
+• Lead with emotion or benefit, not description
+• Use specific numbers over vague claims ("降价300元" not "大幅降价")
+• Plant curiosity gaps: make the viewer NEED to see the next clip
+• Rhythmic patterns: short-short-LONG-short creates musicality
+• NEVER say "我们可以看到..." / "这里有一个..." — these are visual description crutches
+
+noAudio/subtitle-only mode writing:
+• Text IS the voiceover — it must carry ALL information since there's no spoken audio
+• Each narration segment should be self-contained (viewers can't hear context from previous subtitle)
+• Use emoji and punctuation for emotional cues: "！" for excitement, "……" for suspense, "？" for curiosity
+• Subtitle text should be slightly MORE expressive than voiceover text (compensating for lack of tone)
+• Avoid long sentences that require 3+ seconds to read — split into multiple clips if needed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. RHYTHM & DURATION CALCULATOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Clip count planning (MATCH THIS):
+• Target 30s video: 8–12 clips
+• Target 45s video: 10–15 clips
+• Target 60s video: 12–18 clips
+• Target 90s video: 15–22 clips
+
+Per-clip duration guardrails:
+• Hook zone clips: 0.8–2.5s
+• Fast information: 1.5–3.0s
+• Standard rhythm: 2.5–4.0s
+• Emotional / slow: 3.5–6.0s
+• Product detail showcase: 2.0–3.5s
+• NEVER exceed 8s for any single clip
+• At least 40% of clips should be under 3s (maintains energy)
+
+Transition rhythm rules:
+• >60% of transitions should be "cut" (hard cut) — this is the default
+• Use "fadeblack" ONLY at major section breaks (max 1–2 per video)
+• Use "dissolve" or "fade" for emotional transitions or time jumps (max 2–3 per video)
+• Use "slideleft"/"slideright" for energetic montage sequences
+• "zoomin" works well for product reveal or emphasis moments
+• Never use the same non-cut transition twice in a row — variety signals quality
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. FOOTAGE USAGE CONSTRAINTS (STRICT)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Same videoIndex: max 3 appearances in entire video
+• Same videoIndex: NEVER consecutive (minimum 2 other clips between appearances)
+• Same exact time range: NEVER reuse (even across different clips)
+• Shaky/blurry clips: max 1.5s per clip, max 2 total in video
+• Each clip MUST use a time range that exists in the scene descriptions provided
+• Do NOT fabricate time ranges — if a scene says 2.5–7.0s, clip must be within that range
+• When multiple sources are available, distribute clip selection across as many as possible
+
+muteOriginal decision:
+• Product promo / talking-head / explainer → TRUE (original audio = interference)
+• Short drama / interview / documentary / live performance → FALSE (original audio = value)
+• When noAudio mode → ALWAYS true (no exceptions)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7. OUTPUT FORMAT (JSON ONLY)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
-  "title": "吸引人的视频标题（15字内，有悬念或价值感）",
-  "script": "全部narration顺序拼接，即完整配音文本",
+  "title": "Engaging Chinese title under 15 chars — suspense, numbers, or strong emotion",
+  "script": "ALL narration segments concatenated in order — the complete 'voiceover' text",
   "clips": [
     {
       "videoIndex": 0,
       "startTime": 2.5,
       "endTime": 5.0,
-      "narration": "这段画面对应的配音文字",
+      "narration": "Subtitle/voiceover text for this clip in Chinese",
       "transition": "cut",
       "transitionDuration": 0.4
     }
@@ -631,7 +783,9 @@ muteOriginal 判断：
   "muteOriginal": true
 }
 
-videoIndex 从 0 开始，对应传入素材的序号。startTime/endTime 精确到 0.1 秒。`;
+videoIndex = 0-based index into the provided footage list.
+startTime/endTime = precise to 0.1 seconds, extracted from scene descriptions.
+transition = only meaningful from clip[1] onward (first clip's transition is ignored).`;
 
   const result = await getDeepSeek().chat.completions.create({
     model: ENV.deepseekModel,
@@ -640,13 +794,16 @@ videoIndex 从 0 开始，对应传入素材的序号。startTime/endTime 精确
       {
         role: "user",
         content:
-          `【创作需求】${prompt}\n` +
-          (creativeBrief ? `【创意简报】${creativeBrief}\n` : "") +
-          `【主题】${topic}\n` +
-          `【风格】${style}\n` +
-          `【目标时长】${targetDuration}秒（允许±10秒浮动）\n\n` +
-          `【可用素材详情】\n${sceneDetails}\n\n` +
-          `⚠️ 重要提示：严格遵守素材使用约束，同一素材最多用3次且不得连续；只输出合法 JSON。`,
+          `[Creative Request] ${prompt}\n` +
+          (creativeBrief ? `[Creative Brief] ${creativeBrief}\n` : "") +
+          `[Topic] ${topic}\n` +
+          `[Style] ${style}\n` +
+          `[Target Duration] ${targetDuration}s (allow ±10s)\n` +
+          (noAudio
+            ? `[IMPORTANT: No-Voiceover Mode] User does NOT want voiceover. The "narration" field should contain subtitle copy (15-30 chars each). muteOriginal MUST be true. Generate enough clips to cover the target duration — minimum 6 clips, ideally 8+. The text in each narration will be burned as on-screen subtitles.\n`
+            : "") +
+          `\n[Available Footage Details]\n${sceneDetails}\n\n` +
+          `⚠️ STRICT: Follow all footage usage constraints — same videoIndex max 3 uses, never consecutive. Output ONLY valid JSON.`,
       },
     ],
   });
@@ -1089,11 +1246,11 @@ async function reviewPlan(
 ): Promise<ReviewResult> {
   const clipsDesc = scriptResult.clips
     .map((c, i) =>
-      `  片段${i + 1}：素材[${c.videoIndex}] ${c.startTime.toFixed(1)}s→${c.endTime.toFixed(1)}s（${(c.endTime - c.startTime).toFixed(1)}秒）| 转场:${c.transition || "fade"} | 配音："${c.narration}"`
+      `  Clip ${i + 1}: source[${c.videoIndex}] ${c.startTime.toFixed(1)}s→${c.endTime.toFixed(1)}s (${(c.endTime - c.startTime).toFixed(1)}s) | transition:${c.transition || "fade"} | narration: "${c.narration}"`
     )
     .join("\n");
 
-  // 检测素材重复使用情况
+  // Detect footage overuse
   const videoUsageCount: Record<number, number> = {};
   const consecutiveViolations: number[] = [];
   scriptResult.clips.forEach((c, i) => {
@@ -1104,64 +1261,64 @@ async function reviewPlan(
   });
   const overusedVideos = Object.entries(videoUsageCount)
     .filter(([, count]) => count > 3)
-    .map(([idx, count]) => `素材[${idx}]用了${count}次`);
+    .map(([idx, count]) => `source[${idx}] used ${count}x`);
 
   const configDesc = autoConfig
-    ? `画幅:${autoConfig.aspect} | 分辨率:${autoConfig.resolution} | 音色:${autoConfig.voiceId} | 语速:${autoConfig.speed} | BGM:${autoConfig.bgmMood}(音量${autoConfig.bgmVolume}) | 字幕:${autoConfig.subtitlesEnabled ? (autoConfig.subtitlesBurnIn ? "烧录(" + autoConfig.subtitleStyle + ")" : "仅SRT") : "关闭"} | noAudio:${autoConfig.noAudio}`
-    : "手动配置";
+    ? `aspect:${autoConfig.aspect} | resolution:${autoConfig.resolution} | voice:${autoConfig.voiceId} | speed:${autoConfig.speed} | BGM:${autoConfig.bgmMood}(vol ${autoConfig.bgmVolume}) | subtitles:${autoConfig.subtitlesEnabled ? (autoConfig.subtitlesBurnIn ? "burn-in(" + autoConfig.subtitleStyle + ")" : "SRT only") : "off"} | noAudio:${autoConfig.noAudio}`
+    : "Manual config";
 
-  const systemPrompt = `你是一位经验丰富的短视频质量总监，负责对 AI 生成的剪辑方案进行专业审查。你的审查直接影响成片质量，必须客观严格，不能放水。
-
-━━━━━━━━━━━━━━━━━━━━━━━
-审查维度（各维度权重）
-━━━━━━━━━━━━━━━━━━━━━━━
-
-【1. 需求贴合度 30%】
-• 是否真正理解用户意图（而非套用模板）
-• 视频类型/风格是否匹配需求
-• 目标受众是否清晰，内容是否对口
-
-【2. 脚本质量 25%】
-• 开头是否有强钩子（前3秒能抓住人吗？）
-• narration 是否口语化、有节奏感
-• 信息密度是否合适（不过密也不空洞）
-• 结尾是否有收束感/行动引导
-
-【3. 剪辑方案合理性 25%】
-• 片段时长是否符合内容节奏
-• 镜头切换逻辑是否自然（有视觉呼应吗？）
-• 转场选择是否合适
-• 总时长是否接近目标时长
-
-【4. 素材使用规范 20%】
-• 同一素材是否过度重复（>3次扣分）
-• 是否有连续使用同一素材的情况
-• 是否存在明显的时间段冲突（同素材同时段重复截取）
+  const systemPrompt = `You are an experienced short-video quality director responsible for professionally reviewing AI-generated editing plans. Your review directly determines final video quality — be objective and strict, do not pass subpar work.
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-评分标准
+Review Dimensions (with weights)
 ━━━━━━━━━━━━━━━━━━━━━━━
-• 9-10分：专业级，可直接执行，接近人工剪辑水平
-• 7-8分：良好，有小瑕疵但不影响整体，建议执行
-• 5-6分：一般，存在明显问题，需要针对性改进
-• 3-4分：较差，核心问题突出，建议重新生成
-• 1-2分：无法接受，需要完全重写
 
-⚠️ 严格要求：评分低于 5 时，suggestions 必须给出逐片段的具体改写指令（"第X片段建议改为..."），不接受笼统的"需要提升吸引力"这类无效建议。
+[1. Request Alignment 30%]
+• Does the plan truly understand user intent (not just template application)?
+• Does the video type/style match the request?
+• Is the target audience clear? Is the content appropriate?
+
+[2. Script Quality 25%]
+• Does the opening have a strong hook (can it capture attention in the first 3 seconds)?
+• Is the narration conversational and rhythmic?
+• Is information density appropriate (neither too dense nor empty)?
+• Does the ending have closure or a clear call to action?
+
+[3. Editing Plan Rationality 25%]
+• Do clip durations match content pacing?
+• Is the clip transition logic natural (visual continuity)?
+• Are transition choices appropriate?
+• Is total duration close to target?
+
+[4. Footage Usage Compliance 20%]
+• Is any single source overused (>3x = penalty)?
+• Are there consecutive uses of the same source?
+• Are there obvious time range conflicts (same source, same range used twice)?
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-输出格式（严格 JSON，不要额外文字）
+Scoring Standards
+━━━━━━━━━━━━━━━━━━━━━━━
+• 9-10: Professional grade, ready to execute, near human-editor quality
+• 7-8: Good, minor issues but overall solid, recommend execution
+• 5-6: Average, clear problems exist, needs targeted improvement
+• 3-4: Poor, core issues prominent, recommend regeneration
+• 1-2: Unacceptable, complete rewrite needed
+
+⚠️ STRICT: When scoring below 5, suggestions MUST include per-clip specific rewrite instructions (e.g. "Replace clip 3 with source[0] 2.5-5.0s, current shot is too long and repetitive"). Generic suggestions like "improve engagement" are UNACCEPTABLE.
+
+━━━━━━━━━━━━━━━━━━━━━━━
+Output Format (strict JSON, no extra text)
 ━━━━━━━━━━━━━━━━━━━━━━━
 {
   "score": 8,
-  "scriptReview": "脚本质量评价（60字内，指出最大亮点和最大问题）",
-  "clipReview": "剪辑方案评价（60字内，指出节奏/素材使用的核心问题）",
+  "scriptReview": "Script quality assessment in Chinese, under 60 chars — highlight the biggest strength and the biggest issue",
+  "clipReview": "Editing plan assessment in Chinese, under 60 chars — point out the core pacing/footage usage issues",
   "suggestions": [
-    "具体可执行的改进建议1（如：片段3建议换用[0]素材2.5-5.0s，当前镜头过长且内容重复）",
-    "具体改进建议2"
+    "Specific actionable suggestion in Chinese (e.g. replace clip 3 with source[0] 2.5-5.0s, current shot is too long and repetitive)",
+    "Another specific suggestion"
   ],
   "riskWarnings": [
-    "风险提示（如：素材[2]被使用4次，超出限制；第1片段转场与内容风格不符）"
+    "Risk warning in Chinese (e.g. source[2] used 4x exceeds limit; clip 1 transition mismatch with content style)"
   ]
 }`;
 
@@ -1172,21 +1329,21 @@ async function reviewPlan(
       {
         role: "user",
         content:
-          `【用户需求】${prompt}\n\n` +
-          `【制作配置】${configDesc}\n\n` +
-          `【视频标题】${scriptResult.title}\n` +
-          `【完整脚本】${scriptResult.script}\n\n` +
-          `【剪辑方案】共 ${scriptResult.clips.length} 段，muteOriginal=${scriptResult.muteOriginal}\n${clipsDesc}\n\n` +
-          (overusedVideos.length ? `⚠️ 检测到素材过度使用：${overusedVideos.join("、")}\n` : "") +
-          (consecutiveViolations.length ? `⚠️ 检测到连续使用同一素材：第 ${consecutiveViolations.map((i) => i + 1).join("、")} 片段\n` : "") +
-          `\n请客观审查并给出评分。`,
+          `[User Request] ${prompt}\n\n` +
+          `[Production Config] ${configDesc}\n\n` +
+          `[Video Title] ${scriptResult.title}\n` +
+          `[Full Script] ${scriptResult.script}\n\n` +
+          `[Editing Plan] ${scriptResult.clips.length} clips, muteOriginal=${scriptResult.muteOriginal}\n${clipsDesc}\n\n` +
+          (overusedVideos.length ? `⚠️ Detected footage overuse: ${overusedVideos.join(", ")}\n` : "") +
+          (consecutiveViolations.length ? `⚠️ Detected consecutive same-source clips: #${consecutiveViolations.map((i) => i + 1).join(", ")}\n` : "") +
+          `\nPlease review objectively and provide a score.`,
       },
     ],
   });
 
   const content = result.choices[0]?.message?.content;
   if (!content) {
-    return { score: 5, scriptReview: "审查 Agent 未返回结果", clipReview: "", suggestions: [], riskWarnings: [] };
+    return { score: 5, scriptReview: "Review agent returned empty", clipReview: "", suggestions: [], riskWarnings: [] };
   }
 
   const parsed = parseJsonResponse(content);
@@ -1256,6 +1413,11 @@ async function runAiVideoCreator(
   }
 
   const noAudio = params.noAudio || autoConfig?.noAudio || false;
+  // muteOriginalOverride：用户在 prompt 里明确要求原声静音
+  const muteOriginalOverride = params.muteOriginalOverride === true;
+  if (noAudio || muteOriginalOverride) {
+    console.log(`[AI Creator] noAudio=${noAudio}, muteOriginalOverride=${muteOriginalOverride} → 强制 muteOriginal=true`);
+  }
 
   // 字幕开关
   const subtitlesEnabled = params.subtitles
@@ -1337,6 +1499,7 @@ async function runAiVideoCreator(
       selectedVideos,
       selectedVideoIds,
       intent.creativeBrief,
+      noAudio,
     );
   }
 
@@ -1445,12 +1608,19 @@ async function runAiVideoCreator(
   await updateProgress(55);
   console.log(`[AI Creator] Phase 4: 剪辑合成, ${scriptResult.clips.length} 个片段, muteOriginal=${scriptResult.muteOriginal}`);
 
+  // noAudio=true 时强制覆盖 LLM 的 muteOriginal 决策
+  const effectiveMuteOriginal = noAudio ? true : scriptResult.muteOriginal;
+  if (noAudio && !scriptResult.muteOriginal) {
+    console.log("[AI Creator] noAudio=true 强制覆盖 muteOriginal: false → true");
+    scriptResult.muteOriginal = true;
+  }
+
   // 6. Phase 4: 剪辑 + 合成
   const editedPath = await executeEditPlan(
     task.id,
     scriptResult.clips,
     selectedVideoIds,
-    scriptResult.muteOriginal,
+    effectiveMuteOriginal,
     null, // 暂不在这里混音，下面统一处理 BGM
   );
   console.log(`[AI Creator] Phase 4 完成: ${editedPath}`);
@@ -1460,17 +1630,17 @@ async function runAiVideoCreator(
   console.log("[AI Creator] updateProgress(70) done");
 
   // 7. 混音：TTS + BGM ducking（或仅 BGM / 仅 TTS）
-  console.log(`[AI Creator] Phase 7: 混音, bgmMood=${finalBgmMood}, muteOriginal=${scriptResult.muteOriginal}, audioPath=${!!audioPath}`);
+  console.log(`[AI Creator] Phase 7: 混音, bgmMood=${finalBgmMood}, muteOriginal=${effectiveMuteOriginal}, audioPath=${!!audioPath}`);
   const bgmPath = pickBgmByMood(finalBgmMood);
   console.log(`[AI Creator] BGM 路径: ${bgmPath || "无"}`);
   const mixedPath = outputPath(task.id, "mixed");
   if (audioPath) {
     console.log("[AI Creator] 混音模式: TTS + BGM");
-    await mixAudio(editedPath, audioPath, mixedPath, scriptResult.muteOriginal, bgmPath, finalBgmVolume);
+    await mixAudio(editedPath, audioPath, mixedPath, effectiveMuteOriginal, bgmPath, finalBgmVolume);
   } else if (bgmPath) {
     console.log("[AI Creator] 混音模式: 仅BGM");
-    await mixBgmOnly(editedPath, mixedPath, bgmPath, finalBgmVolume, scriptResult.muteOriginal);
-  } else if (scriptResult.muteOriginal) {
+    await mixBgmOnly(editedPath, mixedPath, bgmPath, finalBgmVolume, effectiveMuteOriginal);
+  } else if (effectiveMuteOriginal) {
     console.log("[AI Creator] 混音模式: 静音");
     await execAsync(`ffmpeg -i "${editedPath}" -an -c:v copy "${mixedPath}" -y`, { timeout: 60000 });
   } else {

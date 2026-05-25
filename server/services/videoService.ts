@@ -17,6 +17,19 @@ const ALLOWED_MIME_TYPES = [
 ];
 const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".flv"];
 
+function sanitizeFileName(originalName: string): string {
+  const parsed = path.parse(originalName);
+  const ext = parsed.ext.toLowerCase();
+  const base = (parsed.name || "video")
+    .normalize("NFKC")
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/^\.+/, "")
+    .slice(0, 120) || "video";
+
+  return `${base}${ext}`;
+}
+
 export async function ensureUploadDir() {
   if (!fs.existsSync(UPLOAD_DIR)) {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -69,7 +82,7 @@ export async function saveVideo(
   await ensureUploadDir();
 
   const timestamp = Date.now();
-  const safeName = `${timestamp}_${originalName}`;
+  const safeName = `${timestamp}_${sanitizeFileName(originalName)}`;
   const filePath = path.join(UPLOAD_DIR, safeName);
 
   fs.copyFileSync(tempPath, filePath);
@@ -225,15 +238,31 @@ export async function deleteVideo(id: number, userId: number): Promise<boolean> 
   const video = await getVideoById(id, userId);
   if (!video) return false;
 
-  // 删除文件
+  const activeTasks = await db
+    .select({ id: processingTasks.id })
+    .from(processingTasks)
+    .where(
+      and(
+        eq(processingTasks.videoId, id),
+        inArray(processingTasks.status, ["queued", "processing"] as any)
+      )
+    )
+    .limit(1);
+
+  if (activeTasks.length > 0) return false;
+
   if (fs.existsSync(video.filePath)) {
     fs.unlinkSync(video.filePath);
   }
 
-  // 删除数据库记录
-  await db
-    .delete(videos)
-    .where(eq(videos.id, id));
+  const thumbPath = path.resolve("uploads/thumbnails", `${id}.jpg`);
+  if (fs.existsSync(thumbPath)) {
+    fs.unlinkSync(thumbPath);
+  }
+
+  await db.delete(videoAnalysis).where(eq(videoAnalysis.videoId, id));
+  await db.delete(processingTasks).where(eq(processingTasks.videoId, id));
+  await db.delete(videos).where(eq(videos.id, id));
 
   return true;
 }

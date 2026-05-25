@@ -9,7 +9,7 @@ import { getUserCredits, initializeCreditRates, rechargeCredits, deductCreditsAd
 import { getUserVideos, getUserVideosWithStatus, getVideoById, deleteVideo } from "./services/videoService";
 import { createProject, getUserProjects, getProjectById, getProjectWithVideoCount, deleteProject } from "./services/projectService";
 import { createTask, getUserTasks, getTaskById, deleteTask } from "./services/taskService";
-import { getAnalysisByTaskId } from "./services/analysisService";
+import { getAnalysisByTaskId, getAnalysisByVideoId } from "./services/analysisService";
 import { getSubtitlesByTaskId } from "./services/subtitleService";
 import { listBgmFiles } from "./services/bgmService";
 import { listUsers, setUserActive, setUserRole, getCreditTransactions, getTaskStats, listAllTasks, getOverviewStats, getDailyUserRegistrations, getDailyCreditConsumption, getDailyTaskCounts, getAvgProcessingDuration } from "./services/adminService";
@@ -151,6 +151,13 @@ export const appRouter = router({
       .input(z.object({ taskId: z.number() }))
       .query(async ({ input }) => {
         const result = await getAnalysisByTaskId(input.taskId);
+        if (!result) return { success: false, message: "分析结果不存在" };
+        return { success: true, data: result };
+      }),
+    byVideoId: protectedProcedure
+      .input(z.object({ videoId: z.number() }))
+      .query(async ({ input }) => {
+        const result = await getAnalysisByVideoId(input.videoId);
         if (!result) return { success: false, message: "分析结果不存在" };
         return { success: true, data: result };
       }),

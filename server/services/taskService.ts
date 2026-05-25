@@ -57,7 +57,10 @@ async function processTask(task: ProcessingTask) {
   running.add(task.id);
 
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    running.delete(task.id);
+    return;
+  }
 
   try {
     await db
@@ -131,6 +134,25 @@ function startQueue() {
   if (queueInterval) return;
   queueInterval = setInterval(tick, 2000);
   tick();
+}
+
+export async function recoverInterruptedTasks(): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+
+  await db
+    .update(processingTasks)
+    .set({
+      status: "queued",
+      progress: 0,
+      errorMessage: null,
+      startedAt: null,
+    })
+    .where(eq(processingTasks.status, "processing"));
+}
+
+export function startTaskQueue() {
+  startQueue();
 }
 
 export function stopQueue() {

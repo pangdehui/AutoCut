@@ -11,8 +11,9 @@ import { serveStatic, setupVite } from "./vite";
 import multer from "multer";
 import { sdk } from "./sdk";
 import { validateVideoFile, saveVideo } from "../services/videoService";
-import { videos } from "../../drizzle/schema";
-import { eq } from "drizzle-orm";
+import { recoverInterruptedTasks, startTaskQueue } from "../services/taskService";
+import { processingTasks, videos } from "../../drizzle/schema";
+import { and, eq } from "drizzle-orm";
 import "../services/analysisService";
 import "../services/editingService";
 import "../services/subtitleService";
@@ -41,9 +42,49 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
+const STREAM_ROOTS = [
+  path.resolve("uploads/output"),
+  path.resolve("uploads/audio"),
+  path.resolve("uploads/subtitles"),
+];
+
+function isPathInside(parent: string, child: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!!rel && !rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+function collectResultPaths(result: Record<string, unknown> | null | undefined): string[] {
+  if (!result) return [];
+  const keys = ["outputPath", "audioPath", "burntVideo", "srtPath"];
+  return keys
+    .map((key) => result[key])
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .map((value) => path.resolve(value));
+}
+
+async function userCanStreamGeneratedFile(userId: number, absPath: string): Promise<boolean> {
+  if (!STREAM_ROOTS.some((root) => isPathInside(root, absPath))) return false;
+
+  const { getDb } = await import("../db");
+  const db = await getDb();
+  if (!db) return false;
+
+  const tasks = await db
+    .select({ result: processingTasks.result })
+    .from(processingTasks)
+    .where(eq(processingTasks.userId, userId));
+
+  return tasks.some((task) =>
+    collectResultPaths(task.result as Record<string, unknown> | null)
+      .some((candidate) => candidate === absPath)
+  );
+}
+
 async function startServer() {
   const app = express();
   const server = createServer(app);
+  await recoverInterruptedTasks();
+  startTaskQueue();
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -137,9 +178,6 @@ async function startServer() {
       }
 
       const thumbPath = path.join(thumbDir, `${videoId}.jpg`);
-      if (fs.existsSync(thumbPath)) {
-        return res.sendFile(thumbPath);
-      }
 
       // 查找视频
       const { getDb } = await import("../db");
@@ -151,7 +189,7 @@ async function startServer() {
       const result = await db
         .select({ filePath: videos.filePath })
         .from(videos)
-        .where(eq(videos.id, videoId))
+        .where(and(eq(videos.id, videoId), eq(videos.userId, user.id)))
         .limit(1);
 
       if (result.length === 0) {
@@ -159,6 +197,9 @@ async function startServer() {
       }
 
       const videoPath = result[0].filePath;
+      if (fs.existsSync(thumbPath)) {
+        return res.sendFile(thumbPath);
+      }
       if (!fs.existsSync(videoPath)) {
         return res.status(404).json({ success: false, message: "视频文件不存在" });
       }
@@ -195,7 +236,7 @@ async function startServer() {
       const result = await db
         .select({ filePath: videos.filePath, mimeType: videos.mimeType })
         .from(videos)
-        .where(eq(videos.id, videoId))
+        .where(and(eq(videos.id, videoId), eq(videos.userId, user.id)))
         .limit(1);
 
       if (result.length === 0) return res.status(404).json({ success: false, message: "视频不存在" });
@@ -246,6 +287,9 @@ async function startServer() {
       if (!filePath) return res.status(400).json({ success: false, message: "缺少路径参数" });
 
       const absPath = path.resolve(filePath);
+      if (!(await userCanStreamGeneratedFile(user.id, absPath))) {
+        return res.status(403).json({ success: false, message: "Forbidden" });
+      }
       if (!fs.existsSync(absPath)) return res.status(404).json({ success: false, message: "文件不存在" });
 
       const stat = fs.statSync(absPath);
