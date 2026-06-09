@@ -88,7 +88,7 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-accent/5 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-muted flex items-center justify-center p-4">
       <Card className="w-full max-w-md shadow-lg border-border/50">
         <CardHeader className="space-y-2 text-center">
           <CardTitle className="text-2xl font-bold">创建账户</CardTitle>

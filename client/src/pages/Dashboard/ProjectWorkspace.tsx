@@ -37,6 +37,28 @@ function formatTime(value: string | Date | number): string {
   return new Date(value).toLocaleString("zh-CN");
 }
 
+function ClipThumb({ videoId, time }: { videoId: number | undefined; time: number }) {
+  const [errored, setErrored] = useState(false);
+  if (videoId == null || errored) {
+    return (
+      <div className="w-14 h-9 rounded bg-muted flex items-center justify-center flex-shrink-0">
+        <FileVideo className="h-3 w-3 text-muted-foreground/50" />
+      </div>
+    );
+  }
+  return (
+    <div className="w-14 h-9 rounded overflow-hidden bg-muted flex-shrink-0">
+      <img
+        src={`/api/videos/frame/${videoId}?t=${time.toFixed(1)}`}
+        alt={`${time.toFixed(1)}s`}
+        className="w-full h-full object-cover"
+        loading="lazy"
+        onError={() => setErrored(true)}
+      />
+    </div>
+  );
+}
+
 const TRANSITION_LABELS: Record<string, string> = {
   cut: "硬切", fade: "淡入", fadeblack: "黑场", fadewhite: "白场",
   dissolve: "叠化", slideleft: "左滑", slideright: "右滑",
@@ -203,6 +225,8 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
   const utils = trpc.useUtils();
   const createTaskMutation = trpc.tasks.create.useMutation();
   const deleteVideoMutation = trpc.videos.delete?.useMutation();
+  const iterateMutation = trpc.tasks.iteratePlan.useMutation();
+  const [iterateText, setIterateText] = useState("");
 
   const project = projectQuery.data?.data;
   const videos: any[] = (videosQuery.data?.data as any[]) || [];
@@ -1215,17 +1239,23 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
                               <Film className="h-3 w-3" />剪辑片段（{result.clips.length} 段）
                             </Label>
                             <div className="space-y-1 max-h-40 overflow-auto">
-                              {result.clips.map((c, i) => (
-                                <div key={i} className="p-2 rounded bg-muted/50 text-[10px]">
-                                  <div className="flex items-center justify-between">
-                                    <span className="font-medium">片段{i + 1}</span>
-                                    <span className="text-muted-foreground">
-                                      {c.startTime.toFixed(1)}s-{c.endTime.toFixed(1)}s · {TRANSITION_LABELS[c.transition] || c.transition}
-                                    </span>
+                              {result.clips.map((c, i) => {
+                                const clipVideoId = result.approvedPlanData?.meta?.selectedVideoIds?.[c.videoIndex];
+                                return (
+                                  <div key={i} className="flex items-start gap-2 p-2 rounded bg-muted/50 text-[10px]">
+                                    <ClipThumb videoId={clipVideoId} time={c.startTime} />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center justify-between">
+                                        <span className="font-medium">片段{i + 1}</span>
+                                        <span className="text-muted-foreground">
+                                          {c.startTime.toFixed(1)}s-{c.endTime.toFixed(1)}s · {TRANSITION_LABELS[c.transition] || c.transition}
+                                        </span>
+                                      </div>
+                                      <p className="text-muted-foreground mt-0.5 truncate">{c.narration}</p>
+                                    </div>
                                   </div>
-                                  <p className="text-muted-foreground mt-0.5 truncate">{c.narration}</p>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           </div>
                         )}
@@ -1335,6 +1365,73 @@ export default function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
                           <RefreshCw className="h-3 w-3 mr-1" />重新生成
                         </Button>
                       </div>
+
+                      {/* AI 创作成品：基于这版 diff 式迭代修改（半价 15 积分）*/}
+                      {lastCmdRef.current === "ai_video_creator" && createdTaskId && result.outputPath && (
+                        <div className="space-y-1.5 pt-2 border-t">
+                          <p className="text-[10px] text-muted-foreground">
+                            ✏️ 不满意？说一句怎么改，AI 在原方案上最小改动后重做
+                            <span className="text-brand-violet"> · 15 积分</span>
+                          </p>
+                          <div className="flex gap-1.5">
+                            <Input
+                              value={iterateText}
+                              onChange={(e) => setIterateText(e.target.value)}
+                              placeholder="如：换更抓眼的开头 / 删掉重复片段 / 换舒缓BGM"
+                              className="h-8 text-xs"
+                              disabled={iterateMutation.isPending}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && iterateText.trim() && createdTaskId) {
+                                  iterateMutation.mutate(
+                                    { taskId: createdTaskId, editInstruction: iterateText.trim() },
+                                    {
+                                      onSuccess: (res: any) => {
+                                        if (res.success && res.data) {
+                                          toast.success("修改任务已创建，AI 重新生成中（扣 15 积分）");
+                                          setIterateText("");
+                                          setResult(null);
+                                          setCreatedTaskId(res.data.id);
+                                          utils.tasks.list.invalidate();
+                                        } else {
+                                          toast.error(res.message || "创建修改任务失败");
+                                        }
+                                      },
+                                      onError: (err: any) => toast.error(err.message || "创建修改任务失败"),
+                                    }
+                                  );
+                                }
+                              }}
+                            />
+                            <Button
+                              size="sm"
+                              className="h-8 shrink-0 bg-brand-gradient text-white border-0"
+                              disabled={iterateMutation.isPending || !iterateText.trim() || !createdTaskId}
+                              onClick={() => {
+                                if (!iterateText.trim() || !createdTaskId) return;
+                                iterateMutation.mutate(
+                                  { taskId: createdTaskId, editInstruction: iterateText.trim() },
+                                  {
+                                    onSuccess: (res: any) => {
+                                      if (res.success && res.data) {
+                                        toast.success("修改任务已创建，AI 重新生成中（扣 15 积分）");
+                                        setIterateText("");
+                                        setResult(null);
+                                        setCreatedTaskId(res.data.id);
+                                        utils.tasks.list.invalidate();
+                                      } else {
+                                        toast.error(res.message || "创建修改任务失败");
+                                      }
+                                    },
+                                    onError: (err: any) => toast.error(err.message || "创建修改任务失败"),
+                                  }
+                                );
+                              }}
+                            >
+                              {iterateMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                       {lastEditResultRef.current && (
                         <div className="space-y-1.5 pt-2 border-t">
                           <p className="text-[10px] text-muted-foreground">💬 基于上次结果继续调整：</p>

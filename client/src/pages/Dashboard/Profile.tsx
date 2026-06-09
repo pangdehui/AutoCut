@@ -83,7 +83,7 @@ export default function Profile() {
         </Card>
 
         {/* 积分信息卡片 */}
-        <Card className="border-border/50 shadow-sm bg-gradient-to-br from-accent/5 to-accent/10">
+        <Card className="border-border/50 shadow-sm bg-card">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Zap className="h-5 w-5 text-accent" />

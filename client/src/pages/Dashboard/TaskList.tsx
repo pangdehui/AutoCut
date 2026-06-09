@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { Loader2, Clock, CheckCircle2, AlertCircle, Trash2, RotateCcw, BarChart3, FileText, Download } from "lucide-react";
+import { Loader2, Clock, CheckCircle2, AlertCircle, Trash2, RotateCcw, BarChart3, FileText, Download, XCircle, Ban } from "lucide-react";
 import AnalysisViewer from "./AnalysisViewer";
 import SubtitleViewer from "./SubtitleViewer";
 
@@ -41,6 +41,7 @@ const STATUS_FILTERS = [
   { value: "processing", label: "处理中" },
   { value: "completed", label: "已完成" },
   { value: "failed", label: "失败" },
+  { value: "cancelled", label: "已取消" },
 ];
 
 function formatSize(bytes: number): string {
@@ -116,6 +117,11 @@ function StatusBadge({ status }: { status: string }) {
       className: "bg-red-100 text-red-700 border-red-200",
       label: "失败",
     },
+    cancelled: {
+      icon: <Ban className="h-3 w-3" />,
+      className: "bg-gray-100 text-gray-600 border-gray-200",
+      label: "已取消",
+    },
   };
 
   const c = config[status] || config.queued;
@@ -160,8 +166,26 @@ export default function TaskList() {
     },
   });
 
+  const cancelMutation = trpc.tasks.cancel.useMutation({
+    onSuccess: (res) => {
+      if (res.success) {
+        toast.success("已请求取消任务");
+      } else {
+        toast.error(res.message || "取消失败");
+      }
+      utils.tasks.list.invalidate();
+    },
+    onError: (err) => {
+      toast.error(err.message || "取消失败");
+    },
+  });
+
   const handleDelete = (id: number) => {
     deleteMutation.mutate({ id });
+  };
+
+  const handleCancel = (id: number) => {
+    cancelMutation.mutate({ id });
   };
 
   const allTasks = tasksQuery.data?.data || [];
@@ -302,7 +326,19 @@ export default function TaskList() {
                             {expandedSubtitle === task.id ? "收起字幕" : "查看字幕"}
                           </Button>
                         )}
-                      {(task.status === "completed" || task.status === "failed") && (
+                      {(task.status === "queued" || task.status === "processing") && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs text-orange-600 border-orange-200 hover:bg-orange-50 hover:text-orange-700"
+                          onClick={() => handleCancel(task.id)}
+                          disabled={cancelMutation.isPending}
+                        >
+                          <XCircle className="h-3 w-3 mr-1" />
+                          取消
+                        </Button>
+                      )}
+                      {(task.status === "completed" || task.status === "failed" || task.status === "cancelled") && (
                         <Button
                           variant="ghost"
                           size="icon"

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,7 +9,7 @@ import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import {
   Loader2, Play, Trash2, FileVideo, Calendar, HardDrive,
-  CheckCircle2, AlertCircle, Clock, ChevronDown, ChevronUp, Tag, Wand2, Send,
+  CheckCircle2, AlertCircle, Clock, Tag, Wand2, Send, BarChart3,
 } from "lucide-react";
 import AnalysisViewer from "./AnalysisViewer";
 import VideoPlayer from "@/components/VideoPlayer";
@@ -34,12 +35,15 @@ const STATUS_CONFIG: Record<AnalysisStatus, { label: string; className: string; 
   failed:     { label: "分析失败", className: "bg-red-100 text-red-700",                     icon: <AlertCircle className="h-3 w-3" /> },
 };
 
-export default function VideoList() {
+export default function VideoList({ projectId }: { projectId?: number }) {
   const [expandedTaskId, setExpandedTaskId] = useState<number | null>(null);
   const [aiPrompt, setAiPrompt] = useState<Record<number, string>>({});
   const [editingVideoId, setEditingVideoId] = useState<number | null>(null);
   const [player, setPlayer] = useState<{ open: boolean; videoId: number; title: string }>({ open: false, videoId: 0, title: "" });
-  const videosQuery = trpc.videos.listWithStatus.useQuery(undefined, { refetchInterval: 5000 });
+  const videosQuery = trpc.videos.listWithStatus.useQuery(
+    projectId != null ? { projectId } : undefined,
+    { refetchInterval: 5000 }
+  );
   const deleteVideoMutation = trpc.videos.delete?.useMutation();
   const createTaskMutation = trpc.tasks.create.useMutation();
   const utils = trpc.useUtils();
@@ -131,7 +135,6 @@ export default function VideoList() {
           const status: AnalysisStatus = video.analysisStatus || "none";
           const statusCfg = STATUS_CONFIG[status];
           const hasAnalysis = status === "completed" && video.analysisSummary;
-          const isExpanded = video.analysisTaskId && expandedTaskId === video.analysisTaskId;
           const isEditing = editingVideoId === video.id;
 
           return (
@@ -219,18 +222,12 @@ export default function VideoList() {
                       </div>
                     )}
 
-                    {/* 展开/收起详细分析 */}
+                    {/* 查看详细分析（弹框，不影响网格布局）*/}
                     <button
                       className="flex items-center gap-1 text-xs text-accent hover:underline"
-                      onClick={() =>
-                        setExpandedTaskId(isExpanded ? null : video.analysisTaskId)
-                      }
+                      onClick={() => setExpandedTaskId(video.analysisTaskId)}
                     >
-                      {isExpanded ? (
-                        <><ChevronUp className="h-3 w-3" />收起详情</>
-                      ) : (
-                        <><ChevronDown className="h-3 w-3" />场景 & 精彩片段</>
-                      )}
+                      <BarChart3 className="h-3 w-3" />场景 & 精彩片段
                     </button>
                   </div>
                 </CardContent>
@@ -297,13 +294,6 @@ export default function VideoList() {
                   </Button>
                 </div>
               </CardContent>
-
-              {/* 展开的完整 AnalysisViewer */}
-              {isExpanded && video.analysisTaskId && (
-                <div className="px-6 pb-4">
-                  <AnalysisViewer taskId={video.analysisTaskId} />
-                </div>
-              )}
             </Card>
           );
         })}
@@ -316,6 +306,19 @@ export default function VideoList() {
         src={player.open ? `/api/videos/stream/${player.videoId}` : undefined}
         poster={player.open ? `/api/videos/thumbnail/${player.videoId}` : undefined}
       />
+
+      {/* 分析详情弹框：不占网格空间，不影响其他卡片布局 */}
+      <Dialog open={expandedTaskId !== null} onOpenChange={(v) => !v && setExpandedTaskId(null)}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <BarChart3 className="h-4 w-4 text-accent" />
+              {videos.find((v: any) => v.analysisTaskId === expandedTaskId)?.originalName || "视频分析详情"}
+            </DialogTitle>
+          </DialogHeader>
+          {expandedTaskId !== null && <AnalysisViewer taskId={expandedTaskId} />}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
