@@ -298,20 +298,66 @@ export async function adjustVolume(
 // ====== 转场（xfade）支持 ======
 
 export type TransitionType =
+  // 硬切（不走 xfade，直接 concat）
   | "cut"
+  // 淡入淡出系
   | "fade"
   | "fadeblack"
   | "fadewhite"
+  | "fadegrays"
   | "dissolve"
+  | "distance"
+  // 滑动系
   | "slideleft"
   | "slideright"
   | "slideup"
   | "slidedown"
+  // 平滑滑动系（带缓动，更柔和）
+  | "smoothleft"
+  | "smoothright"
+  | "smoothup"
+  | "smoothdown"
+  // 覆盖系（新片段盖住旧片段）
+  | "coverleft"
+  | "coverright"
+  | "coverup"
+  | "coverdown"
+  // 揭示系（旧片段滑走露出新片段）
+  | "revealleft"
+  | "revealright"
+  | "revealup"
+  | "revealdown"
+  // 擦除系（直边）
   | "wipeleft"
   | "wiperight"
+  | "wipeup"
+  | "wipedown"
+  // 擦除系（四角斜向）
+  | "wipetl"
+  | "wipetr"
+  | "wipebl"
+  | "wipebr"
+  // 对角推移系
+  | "diagtl"
+  | "diagtr"
+  | "diagbl"
+  | "diagbr"
+  // 几何开合系
   | "circleopen"
   | "circleclose"
-  | "zoomin";
+  | "circlecrop"
+  | "rectcrop"
+  | "horzopen"
+  | "horzclose"
+  | "vertopen"
+  | "vertclose"
+  // 特效系
+  | "zoomin"
+  | "pixelize"
+  | "hblur"
+  | "radial"
+  | "squeezeh"
+  | "squeezev";
 
 export interface SegmentTransition {
   type: TransitionType;

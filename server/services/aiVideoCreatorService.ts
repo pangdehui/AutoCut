@@ -82,10 +82,22 @@ interface AiCreatorParams {
   };
   /** 强制静音原视频（用户在 prompt 里明确说了"原音静音/原声去掉"） */
   muteOriginalOverride?: boolean;
-  /** 仅生成方案+审查，不执行剪辑（用户确认后再继续） */
+  /** 仅生成方案+审查，不执行剪辑（用户确认后再继续）。true=方案确认模式；false/缺省=极速一键 */
   planOnly?: boolean;
   /** 用户确认后传入，跳过 Phase 0-2，直接执行 Phase 3-5 */
   approvedPlan?: ScriptResult;
+  /** 用户确认后回传的选中视频子集 ID，必须与 review 阶段返回的一致，用于让 clips.videoIndex 对齐 */
+  selectedVideoIds?: number[];
+  /** 迭代修改：上一版完整方案（来自上一任务的 result），diff 式修改的基准 */
+  previousPlan?: {
+    title: string;
+    script: string;
+    clips: ScriptClip[];
+    muteOriginal: boolean;
+    selectedVideoIds: number[];
+  };
+  /** 迭代修改：本轮自然语言修改指令，如"开头第一段换更抓眼的镜头" */
+  editInstruction?: string;
 }
 
 interface VideoSummary {
@@ -508,9 +520,18 @@ ${videoListText}
 // ====== Phase 2: LLM 生成脚本 + 剪辑计划 ======
 
 const TRANSITION_TYPES: TransitionType[] = [
-  "cut", "fade", "fadeblack", "fadewhite", "dissolve",
+  "cut",
+  "fade", "fadeblack", "fadewhite", "fadegrays", "dissolve", "distance",
   "slideleft", "slideright", "slideup", "slidedown",
-  "wipeleft", "wiperight", "circleopen", "circleclose", "zoomin",
+  "smoothleft", "smoothright", "smoothup", "smoothdown",
+  "coverleft", "coverright", "coverup", "coverdown",
+  "revealleft", "revealright", "revealup", "revealdown",
+  "wipeleft", "wiperight", "wipeup", "wipedown",
+  "wipetl", "wipetr", "wipebl", "wipebr",
+  "diagtl", "diagtr", "diagbl", "diagbr",
+  "circleopen", "circleclose", "circlecrop", "rectcrop",
+  "horzopen", "horzclose", "vertopen", "vertclose",
+  "zoomin", "pixelize", "hblur", "radial", "squeezeh", "squeezev",
 ];
 
 const SCRIPT_SCHEMA = {
@@ -532,7 +553,7 @@ const SCRIPT_SCHEMA = {
             transition: {
               type: "string",
               enum: TRANSITION_TYPES,
-              description: "进入此片段时使用的转场（首片段会被忽略）。cut=硬切；fade/dissolve=淡入；fadeblack/fadewhite=黑场/白场；slide*=滑动；wipe*=擦除；circle*=圆形开合；zoomin=推近",
+              description: "进入此片段时使用的转场（首片段会被忽略）。cut=硬切（最常用）；fade/dissolve/distance=淡入溶解；fadeblack/fadewhite/fadegrays=黑场/白场/灰场；slide*=滑动；smooth*=平滑滑动（更柔）；cover*=新片盖入；reveal*=旧片滑走露出；wipe上下左右=直边擦除；wipetl/tr/bl/br=四角斜擦；diag*=对角推移；circleopen/close/circlecrop=圆形开合/裁切；rectcrop=矩形裁切；horzopen/close、vertopen/close=横/竖开合；zoomin=推近；pixelize=像素化；hblur=模糊过渡；radial=径向扫；squeezeh/v=横/竖挤压",
             },
             transitionDuration: {
               type: "number",
@@ -741,12 +762,16 @@ Per-clip duration guardrails:
 • At least 40% of clips should be under 3s (maintains energy)
 
 Transition rhythm rules:
-• >60% of transitions should be "cut" (hard cut) — this is the default
-• Use "fadeblack" ONLY at major section breaks (max 1–2 per video)
-• Use "dissolve" or "fade" for emotional transitions or time jumps (max 2–3 per video)
-• Use "slideleft"/"slideright" for energetic montage sequences
-• "zoomin" works well for product reveal or emphasis moments
+• >60% of transitions should be "cut" (hard cut) — this is the default, never overuse fancy transitions
+• Use "fadeblack"/"fadewhite" ONLY at major section breaks (max 1–2 per video)
+• Use "dissolve"/"fade"/"distance" for emotional transitions or time jumps (max 2–3 per video)
+• Use "slide*" or "smooth*" for energetic montage sequences (smooth* is softer/eased)
+• Use "cover*"/"reveal*" for clean scene swaps (cover = new clip slides in over old; reveal = old slides away)
+• Use "wipe*" (incl. corner wipetl/tr/bl/br) and "diag*" for snappy directional cuts
+• Use "circleopen/close", "circlecrop", "rectcrop", "horzopen/close", "vertopen/close" sparingly for stylized reveals
+• "zoomin" for product reveal or emphasis; "pixelize"/"hblur"/"radial"/"squeezeh"/"squeezev" are special-effect transitions — at most 1 per video, only when the style truly calls for it
 • Never use the same non-cut transition twice in a row — variety signals quality
+• Match transition energy to content: calm/emotional → fade/dissolve/smooth; energetic/product → cut/slide/zoomin/wipe
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 6. FOOTAGE USAGE CONSTRAINTS (STRICT)
@@ -821,7 +846,199 @@ transition = only meaningful from clip[1] onward (first clip's transition is ign
   return parsed;
 }
 
-// ====== Phase 3: TTS 生成 ======
+// ====== Phase 2-Edit: diff 式迭代修改（基于上一版方案做最小改动）======
+
+type PlanDiffOp =
+  | { op: "modify_narration"; index: number; narration: string }
+  | { op: "replace_clip"; index: number; clip: Partial<ScriptClip> }
+  | { op: "delete_clip"; index: number }
+  | { op: "insert_clip"; afterIndex: number; clip: ScriptClip }
+  | { op: "change_transition"; index: number; transition: TransitionType; transitionDuration?: number }
+  | { op: "set_title"; title: string }
+  | { op: "set_mute"; muteOriginal: boolean };
+
+interface PlanDiff {
+  operations: PlanDiffOp[];
+  /** LLM 对本次修改的简述，便于回显给用户 */
+  summary?: string;
+}
+
+/**
+ * 纯函数：把 diff 操作合并回上一版方案，产出新方案。
+ * 容错：非法 index 的操作直接跳过（不抛错），保证迭代不会因单条非法操作整体失败。
+ * 注意：所有 index 基于「原始方案」的下标；insert/delete 在最后统一结算，避免下标漂移。
+ */
+function applyPlanDiff(prev: ScriptResult, diff: PlanDiff): ScriptResult {
+  const clips: ScriptClip[] = prev.clips.map((c) => ({ ...c }));
+  let title = prev.title;
+  let muteOriginal = prev.muteOriginal;
+
+  // 先处理就地修改类操作（不改变数组长度）
+  const inserts: Array<{ afterIndex: number; clip: ScriptClip }> = [];
+  const deleteIdx = new Set<number>();
+
+  for (const op of diff.operations || []) {
+    switch (op.op) {
+      case "set_title":
+        if (op.title?.trim()) title = op.title.trim();
+        break;
+      case "set_mute":
+        if (typeof op.muteOriginal === "boolean") muteOriginal = op.muteOriginal;
+        break;
+      case "modify_narration":
+        if (clips[op.index]) clips[op.index].narration = op.narration ?? clips[op.index].narration;
+        break;
+      case "change_transition":
+        if (clips[op.index]) {
+          clips[op.index].transition = op.transition;
+          if (op.transitionDuration != null) clips[op.index].transitionDuration = op.transitionDuration;
+        }
+        break;
+      case "replace_clip":
+        if (clips[op.index] && op.clip) clips[op.index] = { ...clips[op.index], ...op.clip };
+        break;
+      case "delete_clip":
+        if (clips[op.index]) deleteIdx.add(op.index);
+        break;
+      case "insert_clip":
+        if (op.clip) inserts.push({ afterIndex: op.afterIndex, clip: op.clip });
+        break;
+    }
+  }
+
+  // 结算删除 + 插入（按原始下标，从后往前避免漂移）
+  let next: ScriptClip[] = clips.filter((_, i) => !deleteIdx.has(i));
+  // 插入：afterIndex 指原始下标，映射到当前数组位置（被删的算到其后）
+  const sortedInserts = [...inserts].sort((a, b) => b.afterIndex - a.afterIndex);
+  for (const ins of sortedInserts) {
+    // 计算原始 afterIndex 之前还剩多少个未删除 clip
+    let pos = 0;
+    for (let i = 0; i <= ins.afterIndex && i < clips.length; i++) {
+      if (!deleteIdx.has(i)) pos++;
+    }
+    next.splice(pos, 0, ins.clip);
+  }
+
+  // 兜底：全删空了 → 退回原方案，避免产出空时间轴
+  if (next.length === 0) next = clips;
+
+  return { title, script: prev.script, clips: next, muteOriginal };
+}
+
+const PLAN_DIFF_SCHEMA = {
+  name: "plan_diff",
+  schema: {
+    type: "object",
+    properties: {
+      summary: { type: "string", description: "用一句话概括本次修改（中文）" },
+      operations: {
+        type: "array",
+        description: "对上一版方案的最小修改操作列表。只改用户点名的部分，其余保持不动。",
+        items: {
+          type: "object",
+          properties: {
+            op: {
+              type: "string",
+              enum: ["modify_narration", "replace_clip", "delete_clip", "insert_clip", "change_transition", "set_title", "set_mute"],
+            },
+            index: { type: "number", description: "目标片段下标（基于上一版方案，从0开始）。insert_clip 不用此字段" },
+            afterIndex: { type: "number", description: "仅 insert_clip：插入到此下标之后（-1 表示插到最前）" },
+            narration: { type: "string", description: "仅 modify_narration：新的配音文本" },
+            transition: { type: "string", description: "仅 change_transition：新转场类型" },
+            transitionDuration: { type: "number", description: "仅 change_transition：转场时长(秒)" },
+            title: { type: "string", description: "仅 set_title：新标题" },
+            muteOriginal: { type: "boolean", description: "仅 set_mute：是否静音原声" },
+            clip: {
+              type: "object",
+              description: "仅 replace_clip/insert_clip：片段内容",
+              properties: {
+                videoIndex: { type: "number" },
+                startTime: { type: "number" },
+                endTime: { type: "number" },
+                narration: { type: "string" },
+                transition: { type: "string" },
+                transitionDuration: { type: "number" },
+              },
+            },
+          },
+          required: ["op"],
+        },
+      },
+    },
+    required: ["operations"],
+  },
+};
+
+/**
+ * 基于上一版方案 + 用户修改指令，生成 diff（最小修改）。
+ * 失败时抛错，调用方可降级为整份重写。
+ */
+async function phase2EditPlan(
+  editInstruction: string,
+  prevPlan: ScriptResult,
+  selectedVideos: VideoSummary[],
+  selectedVideoIds: number[],
+): Promise<PlanDiff> {
+  const sceneDetails = selectedVideos
+    .map((v) => {
+      const vidx = selectedVideoIds.indexOf(v.id);
+      const scenes = (v.scenes || [])
+        .map((s) => `    [${s.startTime.toFixed(1)}s → ${s.endTime.toFixed(1)}s] ${s.description}`)
+        .join("\n");
+      return `[Index:${vidx} | ID:${v.id}] ${v.fileName} (duration:${v.duration?.toFixed(1) ?? "?"}s)\n  scenes:\n${scenes}`;
+    })
+    .join("\n\n");
+
+  const prevClipsDesc = prevPlan.clips
+    .map(
+      (c, i) =>
+        `  #${i}: source[${c.videoIndex}] ${c.startTime.toFixed(1)}-${c.endTime.toFixed(1)}s` +
+        ` | transition:${c.transition || "cut"} | narration:"${c.narration}"`
+    )
+    .join("\n");
+
+  const systemPrompt = `You are a precise video editing assistant. The user already has an editing plan and wants to make a SPECIFIC, MINIMAL change to it. Your job is to output ONLY the diff operations needed — DO NOT rewrite the whole plan.
+
+━━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL RULES
+━━━━━━━━━━━━━━━━━━━━━━━
+• Change ONLY what the user explicitly asked for. Leave every other clip exactly as-is.
+• If the user says "change the opening", only touch clip #0 (and maybe #1). Do NOT modify clips the user didn't mention.
+• All "index" values refer to the PREVIOUS plan's clip indices (0-based).
+• Prefer the smallest operation: to change narration use modify_narration; to swap footage use replace_clip; only use delete/insert when the user wants to add/remove a segment.
+• When replacing or inserting a clip, pick footage from the available list below. videoIndex must be a valid index.
+• Keep total operations minimal. An empty operations array is valid if nothing needs to change.
+
+Output strict JSON matching the schema. No extra text.`;
+
+  const result = await getDeepSeek().chat.completions.create({
+    model: ENV.deepseekModel,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content:
+          `[User's modification request] ${editInstruction}\n\n` +
+          `[Current plan] title="${prevPlan.title}", muteOriginal=${prevPlan.muteOriginal}\n` +
+          `[Current clips]\n${prevClipsDesc}\n\n` +
+          `[Available footage]\n${sceneDetails}\n\n` +
+          `Output the minimal diff operations to satisfy the request. Follow the schema:\n${JSON.stringify(PLAN_DIFF_SCHEMA.schema)}`,
+      },
+    ],
+  });
+
+  const content = result.choices[0]?.message?.content;
+  if (!content) throw new Error("迭代修改 LLM 返回为空");
+  const parsed = parseJsonResponse(content) as PlanDiff;
+  if (!parsed || !Array.isArray(parsed.operations)) {
+    throw new Error("迭代修改返回格式异常（缺少 operations）");
+  }
+  console.log(`[Phase2Edit] diff: ${parsed.operations.length} 个操作, summary="${parsed.summary || ""}"`);
+  return parsed;
+}
+
+
 
 async function generateTtsAudio(
   script: string,
@@ -1022,7 +1239,14 @@ async function executeEditPlan(
   const mergedPath = outputPath(taskId, "merged");
   const hasRealTransition = transitions.some((t) => t.type !== "cut");
   if (hasRealTransition) {
-    await concatVideosWithTransitions(segmentPaths, mergedPath, transitions);
+    try {
+      await concatVideosWithTransitions(segmentPaths, mergedPath, transitions);
+    } catch (e) {
+      // 转场合并失败降级为无转场拼接（xfade 对输入流要求苛刻，concat 几乎不会失败）
+      console.warn("[AI Creator] 转场合并失败，回退无转场拼接:", String(e));
+      if (fs.existsSync(mergedPath)) fs.unlinkSync(mergedPath);
+      await concatVideos(segmentPaths, mergedPath);
+    }
   } else {
     await concatVideos(segmentPaths, mergedPath);
   }
@@ -1364,10 +1588,12 @@ async function runAiVideoCreator(
 ): Promise<Record<string, unknown>> {
   const params = (task.parameters || {}) as AiCreatorParams;
   const hasApproved = !!params.approvedPlan;
+  const isIterate = !!params.previousPlan && !!params.editInstruction;
   console.log(`[AI Creator] ====== 任务 ${task.id} 开始 ======`);
-  console.log(`[AI Creator] prompt: "${(params.prompt || "").slice(0, 80)}", approvedPlan=${hasApproved}, autoMode=${params.autoMode}`);
+  console.log(`[AI Creator] prompt: "${(params.prompt || "").slice(0, 80)}", approvedPlan=${hasApproved}, iterate=${isIterate}, autoMode=${params.autoMode}`);
 
-  if (!params.prompt || params.prompt.trim().length === 0) {
+  // 迭代模式用 editInstruction 驱动，prompt 可空；其余模式必须有 prompt
+  if (!isIterate && (!params.prompt || params.prompt.trim().length === 0)) {
     throw new Error("请提供创作需求描述");
   }
 
@@ -1385,14 +1611,16 @@ async function runAiVideoCreator(
 
   await updateProgress(8);
 
-  // 2. Phase 0: AI 自动决策（用户确认后跳过，参数已在审查阶段确定）
+  // 2. Phase 0: AI 自动决策（用户确认/迭代时跳过，参数从上一版继承）
   const isAuto = params.autoMode !== false;
   let autoConfig: AutoConfig | null = null;
-  if (isAuto && !params.approvedPlan) {
+  if (isAuto && !params.approvedPlan && !isIterate) {
     console.log("[AI Creator] Phase 0: 自动决策...");
     autoConfig = await phase0AutoConfig(params.prompt);
   } else if (params.approvedPlan) {
     console.log("[AI Creator] Phase 0: 跳过（用户已确认，参数从审查阶段继承）");
+  } else if (isIterate) {
+    console.log("[AI Creator] Phase 0: 跳过（迭代模式，参数从上一版继承）");
   }
 
   // 用户显式覆盖优先于自动决策
@@ -1432,7 +1660,7 @@ async function runAiVideoCreator(
 
   await updateProgress(12);
 
-  // 3. Phase 1: LLM 理解意图 + 选择视频（有确认方案则跳过）
+  // 3. Phase 1: LLM 理解意图 + 选择视频（确认/迭代时跳过）
   console.log("[AI Creator] Phase 1: 意图分析...");
   let intent: IntentResult;
   if (params.approvedPlan) {
@@ -1443,6 +1671,15 @@ async function runAiVideoCreator(
       targetDuration: 30,
       selectedVideoIds: [],
       reasoning: "用户已确认方案",
+    };
+  } else if (isIterate) {
+    console.log("[AI Creator] Phase 1: 跳过（迭代模式，沿用上一版选材）");
+    intent = {
+      topic: "",
+      style: "",
+      targetDuration: 30,
+      selectedVideoIds: params.previousPlan!.selectedVideoIds,
+      reasoning: "迭代修改：沿用上一版选中素材",
     };
   } else {
     intent = await phase1Intent(params.prompt, videoSummaries);
@@ -1475,14 +1712,28 @@ async function runAiVideoCreator(
 
   await updateProgress(22);
 
-  const selectedVideoIds = params.approvedPlan
-    ? videoSummaries.map((v) => v.id)
-    : intent.selectedVideoIds;
+  // selectedVideoIds 必须与 review 阶段返回的子集完全一致，才能让 clips.videoIndex 正确对齐。
+  // approvedPlan 继续渲染时使用前端回传的子集；缺失则报错（绝不退回全集——那正是剪错素材的根因）。
+  let selectedVideoIds: number[];
+  if (params.approvedPlan) {
+    if (!params.selectedVideoIds || params.selectedVideoIds.length === 0) {
+      throw new Error("继续渲染缺少 selectedVideoIds（方案确认时需回传 review 阶段的选中子集）");
+    }
+    selectedVideoIds = params.selectedVideoIds;
+  } else if (isIterate) {
+    selectedVideoIds = params.previousPlan!.selectedVideoIds;
+    if (!selectedVideoIds || selectedVideoIds.length === 0) {
+      throw new Error("迭代修改缺少上一版选中素材");
+    }
+  } else {
+    selectedVideoIds = intent.selectedVideoIds;
+  }
   const selectedVideos = videoSummaries.filter((v) => selectedVideoIds.includes(v.id));
 
-  // 4. Phase 2: 脚本 + 剪辑计划（用户确认后直接用已审批方案）
+  // 4. Phase 2: 脚本 + 剪辑计划（确认→用已审批方案；迭代→diff 合并；否则全新生成）
   console.log("[AI Creator] Phase 2: 脚本生成...");
   let scriptResult: ScriptResult;
+  let iterateSummary: string | null = null;
   if (params.approvedPlan) {
     console.log("[AI Creator] Phase 2: 跳过（使用已审批方案）");
     scriptResult = params.approvedPlan;
@@ -1490,6 +1741,36 @@ async function runAiVideoCreator(
       ...c,
       videoIndex: c.videoIndex < selectedVideoIds.length ? c.videoIndex : 0,
     }));
+  } else if (isIterate) {
+    const prevPlan: ScriptResult = {
+      title: params.previousPlan!.title,
+      script: params.previousPlan!.script,
+      clips: params.previousPlan!.clips,
+      muteOriginal: params.previousPlan!.muteOriginal,
+    };
+    try {
+      console.log(`[AI Creator] Phase 2: diff 迭代，指令="${params.editInstruction}"`);
+      const diff = await phase2EditPlan(params.editInstruction!, prevPlan, selectedVideos, selectedVideoIds);
+      scriptResult = applyPlanDiff(prevPlan, diff);
+      iterateSummary = diff.summary || null;
+      // 合并后兜底校验 videoIndex 越界
+      scriptResult.clips = scriptResult.clips.map((c) => ({
+        ...c,
+        videoIndex: c.videoIndex >= 0 && c.videoIndex < selectedVideoIds.length ? c.videoIndex : 0,
+      }));
+    } catch (e) {
+      console.warn("[AI Creator] diff 迭代失败，降级为沿用上一版方案 + 提示词重写:", String(e));
+      scriptResult = await phase2Script(
+        `${params.previousPlan!.script}\n\n【用户要求修改】${params.editInstruction}`,
+        intent.topic,
+        intent.style,
+        30,
+        selectedVideos,
+        selectedVideoIds,
+        undefined,
+        noAudio,
+      );
+    }
   } else {
     scriptResult = await phase2Script(
       params.prompt,
@@ -1506,8 +1787,11 @@ async function runAiVideoCreator(
   await updateProgress(30);
   await updateProgress(35);
 
-  // 审查 Agent：仅在首次生成时运行（用户确认后跳过，避免卡住）
-  if (!params.approvedPlan) {
+  // 审查 Agent 的结果，带到最终成品里展示 AI 自评分（极速模式也保留）
+  let planReview: { score: number; scriptReview: string; clipReview: string; suggestions: string[]; riskWarnings: string[] } | null = null;
+
+  // 审查 Agent：仅在首次生成时运行（用户确认/迭代后跳过，避免覆盖结果或卡住）
+  if (!params.approvedPlan && !isIterate) {
     let review = await reviewPlan(params.prompt, scriptResult, autoConfig);
     let retryCount = 0;
 
@@ -1534,62 +1818,77 @@ async function runAiVideoCreator(
       console.log(`[AI Creator] 重试后评分: ${review.score}/10`);
     }
 
-    // 返回方案让用户审查
-    return {
-      phase: "review",
-      title: scriptResult.title,
-      script: scriptResult.script,
-      clips: scriptResult.clips.map((c) => ({
-        videoIndex: c.videoIndex,
-        startTime: c.startTime,
-        endTime: c.endTime,
-        narration: c.narration,
-        transition: c.transition || "fade",
-        transitionDuration: c.transitionDuration ?? 0.4,
-      })),
-      muteOriginal: scriptResult.muteOriginal,
-      review: {
-        score: review.score,
-        scriptReview: review.scriptReview,
-        clipReview: review.clipReview,
-        suggestions: review.suggestions,
-        riskWarnings: review.riskWarnings,
-      },
-      topic: intent.topic,
-      style: intent.style,
-      selectedVideoIds: selectedVideoIds,
-      voiceId: finalVoiceId,
-      speed: finalSpeed,
-      aspect: finalAspect,
-      resolution: finalResolution,
-      subtitleStyle: finalSubtitleStyle,
-      bgmMood: finalBgmMood,
-      bgmVolume: finalBgmVolume,
-      noAudio,
-      subtitlesEnabled,
-      subtitlesBurnIn,
-      autoMode: isAuto,
-      autoReasoning: autoConfig?.reasoning || null,
-      message: `审查完成 · ${review.score >= 7 ? "建议通过" : "建议修改"}（${review.score}/10分）`,
+    planReview = {
+      score: review.score,
+      scriptReview: review.scriptReview,
+      clipReview: review.clipReview,
+      suggestions: review.suggestions,
+      riskWarnings: review.riskWarnings,
     };
+
+    // 方案确认模式（planOnly=true）：停在 review，返回方案让用户确认/微调。
+    // 极速一键模式（planOnly 缺省/false）：不中断，带着已审查的方案继续 Phase 3-5。
+    if (params.planOnly) {
+      return {
+        phase: "review",
+        title: scriptResult.title,
+        script: scriptResult.script,
+        clips: scriptResult.clips.map((c) => ({
+          videoIndex: c.videoIndex,
+          startTime: c.startTime,
+          endTime: c.endTime,
+          narration: c.narration,
+          transition: c.transition || "fade",
+          transitionDuration: c.transitionDuration ?? 0.4,
+        })),
+        muteOriginal: scriptResult.muteOriginal,
+        review: planReview,
+        topic: intent.topic,
+        style: intent.style,
+        selectedVideoIds: selectedVideoIds,
+        voiceId: finalVoiceId,
+        speed: finalSpeed,
+        aspect: finalAspect,
+        resolution: finalResolution,
+        subtitleStyle: finalSubtitleStyle,
+        bgmMood: finalBgmMood,
+        bgmVolume: finalBgmVolume,
+        noAudio,
+        subtitlesEnabled,
+        subtitlesBurnIn,
+        autoMode: isAuto,
+        autoReasoning: autoConfig?.reasoning || null,
+        message: `审查完成 · ${review.score >= 7 ? "建议通过" : "建议修改"}（${review.score}/10分）`,
+      };
+    }
+    console.log(`[AI Creator] 极速模式：审查 ${review.score}/10，不中断，继续渲染`);
   }
 
   // ====== 用户已确认，继续执行 Phase 3-5 ======
   console.log("[AI Creator] 开始 Phase 3-5 管线...");
   const finalVideoIds = selectedVideoIds;
 
+  // 容错降级记录：任一非关键 Phase 失败时回退而非整任务失败，把降级项带回前端展示
+  const degradations: string[] = [];
+
   // 5. Phase 3: TTS 生成配音
   let audioPath: string | null = null;
   console.log(`[AI Creator] Phase 3: TTS, noAudio=${noAudio}, voice=${finalVoiceId}, speed=${finalSpeed}, scriptLen=${scriptResult.script.length}`);
   if (!noAudio) {
     console.log("[AI Creator] 调用 TTS 网关 submitGatewayTask...");
-    audioPath = await generateTtsAudio(
-      scriptResult.script,
-      finalVoiceId,
-      finalSpeed,
-      task.id,
-    );
-    console.log(`[AI Creator] TTS 完成: ${audioPath}`);
+    try {
+      audioPath = await generateTtsAudio(
+        scriptResult.script,
+        finalVoiceId,
+        finalSpeed,
+        task.id,
+      );
+      console.log(`[AI Creator] TTS 完成: ${audioPath}`);
+    } catch (e) {
+      console.warn("[AI Creator] TTS 失败，降级为无配音（保留原声/字幕传达）:", String(e));
+      degradations.push("audio:tts-failed");
+      audioPath = null;
+    }
   } else {
     console.log("[AI Creator] Phase 3: 跳过 TTS（noAudio=true）");
   }
@@ -1599,9 +1898,15 @@ async function runAiVideoCreator(
   // 5.5 Phase 3.5: Whisper 转写 + 用音频时长修正 clip 时长（让视频时间轴对齐音频）
   let whisperSegments: WhisperSegment[] = [];
   if (audioPath) {
-    whisperSegments = await transcribeTtsAudio(audioPath);
-    if (whisperSegments.length > 0) {
-      scriptResult.clips = adjustClipsToAudio(scriptResult.clips, whisperSegments);
+    try {
+      whisperSegments = await transcribeTtsAudio(audioPath);
+      if (whisperSegments.length > 0) {
+        scriptResult.clips = adjustClipsToAudio(scriptResult.clips, whisperSegments);
+      }
+    } catch (e) {
+      console.warn("[AI Creator] Whisper 转写失败，降级为脚本时轴字幕:", String(e));
+      degradations.push("subtitle:script-timeline");
+      whisperSegments = [];
     }
   }
 
@@ -1634,18 +1939,43 @@ async function runAiVideoCreator(
   const bgmPath = pickBgmByMood(finalBgmMood);
   console.log(`[AI Creator] BGM 路径: ${bgmPath || "无"}`);
   const mixedPath = outputPath(task.id, "mixed");
-  if (audioPath) {
-    console.log("[AI Creator] 混音模式: TTS + BGM");
-    await mixAudio(editedPath, audioPath, mixedPath, effectiveMuteOriginal, bgmPath, finalBgmVolume);
-  } else if (bgmPath) {
-    console.log("[AI Creator] 混音模式: 仅BGM");
-    await mixBgmOnly(editedPath, mixedPath, bgmPath, finalBgmVolume, effectiveMuteOriginal);
-  } else if (effectiveMuteOriginal) {
-    console.log("[AI Creator] 混音模式: 静音");
-    await execAsync(`ffmpeg -i "${editedPath}" -an -c:v copy "${mixedPath}" -y`, { timeout: 60000 });
-  } else {
-    console.log("[AI Creator] 混音模式: 直通");
-    await execAsync(`ffmpeg -i "${editedPath}" -c copy "${mixedPath}" -y`, { timeout: 60000 });
+  try {
+    if (audioPath) {
+      console.log("[AI Creator] 混音模式: TTS + BGM");
+      await mixAudio(editedPath, audioPath, mixedPath, effectiveMuteOriginal, bgmPath, finalBgmVolume);
+    } else if (bgmPath) {
+      console.log("[AI Creator] 混音模式: 仅BGM");
+      await mixBgmOnly(editedPath, mixedPath, bgmPath, finalBgmVolume, effectiveMuteOriginal);
+    } else if (effectiveMuteOriginal) {
+      console.log("[AI Creator] 混音模式: 静音");
+      await execAsync(`ffmpeg -i "${editedPath}" -an -c:v copy "${mixedPath}" -y`, { timeout: 60000 });
+    } else {
+      console.log("[AI Creator] 混音模式: 直通");
+      await execAsync(`ffmpeg -i "${editedPath}" -c copy "${mixedPath}" -y`, { timeout: 60000 });
+    }
+  } catch (e) {
+    // 混音失败降级：优先保住解说(TTS)，否则仅BGM，再否则直通原声，绝不让任务失败
+    console.warn("[AI Creator] 混音失败，尝试降级音轨:", String(e));
+    if (fs.existsSync(mixedPath)) fs.unlinkSync(mixedPath);
+    try {
+      if (audioPath) {
+        console.log("[AI Creator] 降级: 仅 TTS（保留解说）");
+        await execAsync(`ffmpeg -i "${editedPath}" -i "${audioPath}" -map 0:v -map 1:a -c:v copy -shortest "${mixedPath}" -y`, { timeout: 60000 });
+        degradations.push("audio:tts-only");
+      } else if (bgmPath) {
+        console.log("[AI Creator] 降级: 仅 BGM");
+        await mixBgmOnly(editedPath, mixedPath, bgmPath, finalBgmVolume, true);
+        degradations.push("audio:bgm-only");
+      } else {
+        throw e;
+      }
+    } catch (e2) {
+      // 最终兜底：直通（保留原视频音轨），保证一定有产出
+      console.warn("[AI Creator] 降级混音仍失败，直通原视频:", String(e2));
+      if (fs.existsSync(mixedPath)) fs.unlinkSync(mixedPath);
+      await execAsync(`ffmpeg -i "${editedPath}" -c copy "${mixedPath}" -y`, { timeout: 60000 });
+      degradations.push("audio:passthrough");
+    }
   }
   console.log("[AI Creator] 混音完成");
   if (fs.existsSync(editedPath) && editedPath !== mixedPath) {
@@ -1726,6 +2056,15 @@ async function runAiVideoCreator(
     fileSize: stats.size,
     title: scriptResult.title,
     script: scriptResult.script,
+    clips: scriptResult.clips.map((c) => ({
+      videoIndex: c.videoIndex,
+      startTime: c.startTime,
+      endTime: c.endTime,
+      narration: c.narration,
+      transition: c.transition || "fade",
+      transitionDuration: c.transitionDuration ?? 0.4,
+    })),
+    muteOriginal: scriptResult.muteOriginal,
     topic: intent.topic,
     style: intent.style,
     selectedVideoIds: selectedVideoIds,
@@ -1741,7 +2080,13 @@ async function runAiVideoCreator(
     autoMode: isAuto,
     autoReasoning: autoConfig?.reasoning || null,
     noAudio,
-    explanation: `${scriptResult.title} — ${intent.reasoning}`,
+    review: planReview,
+    degradations,
+    iterated: isIterate,
+    iterateSummary,
+    explanation: isIterate
+      ? `${scriptResult.title} — 已按修改要求更新${iterateSummary ? "：" + iterateSummary : ""}`
+      : `${scriptResult.title} — ${intent.reasoning}`,
     transitions: scriptResult.clips.slice(1).map((c) => ({
       type: c.transition || "fade",
       duration: c.transitionDuration ?? 0.4,
@@ -1760,4 +2105,4 @@ async function runAiVideoCreator(
 // 注册任务处理器
 registerTaskHandler("ai_video_creator", runAiVideoCreator);
 
-export { runAiVideoCreator, type AiCreatorParams };
+export { runAiVideoCreator, applyPlanDiff, type AiCreatorParams };
