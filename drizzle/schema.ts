@@ -101,7 +101,7 @@ export const processingTasks = mysqlTable("processingTasks", {
   userId: int("userId").notNull(),
   videoId: int("videoId").notNull(),
   taskType: mysqlEnum("taskType", ["analysis", "editing", "subtitle", "combined", "ai_edit", "tts", "ai_video_creator"]).notNull(),
-  status: mysqlEnum("status", ["queued", "processing", "completed", "failed"]).default("queued").notNull(),
+  status: mysqlEnum("status", ["queued", "processing", "completed", "failed", "cancelled"]).default("queued").notNull(),
   progress: int("progress").default(0), // 0-100
   creditsUsed: bigint("creditsUsed", { mode: "number" }).default(0),
   parameters: json("parameters"), // 任务参数（JSON）
@@ -157,3 +157,18 @@ export const creditRates = mysqlTable("creditRates", {
 
 export type CreditRate = typeof creditRates.$inferSelect;
 export type InsertCreditRate = typeof creditRates.$inferInsert;
+
+// 错误日志表（本地错误监控；可后续接入 Sentry）
+export const errorLogs = mysqlTable("errorLogs", {
+  id: int("id").autoincrement().primaryKey(),
+  source: varchar("source", { length: 64 }).notNull(), // 来源：express / task / unhandled / trpc
+  level: mysqlEnum("level", ["error", "warn"]).default("error").notNull(),
+  message: text("message").notNull(),
+  stack: text("stack"),
+  context: json("context"), // 任务 id、用户 id、路由等附加信息
+  userId: int("userId"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type ErrorLog = typeof errorLogs.$inferSelect;
+export type InsertErrorLog = typeof errorLogs.$inferInsert;
